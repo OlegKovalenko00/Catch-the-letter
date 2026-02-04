@@ -1,0 +1,14 @@
+﻿services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    environment:
+      - IMAP_PASSWORD=change_me
+      - TELEGRAM_BOT_TOKEN=change_me
+      - TELEGRAM_CHAT_ID=change_me
+      - TWILIO_ACCOUNT_SID=
+      - TWILIO_AUTH_TOKEN=

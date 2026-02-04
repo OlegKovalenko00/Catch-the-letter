@@ -1,0 +1,37 @@
+﻿{
+  "imap": {
+    "host": "imap.example.com",
+    "port": 993,
+    "tls": true,
+    "username": "user@example.com",
+    "password": "${IMAP_PASSWORD}",
+    "folder": "INBOX",
+    "poll_interval_sec": 20,
+    "mark_seen": false
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "chat_id": "${TELEGRAM_CHAT_ID}"
+  },
+  "twilio": {
+    "enabled": false,
+    "account_sid": "${TWILIO_ACCOUNT_SID}",
+    "auth_token": "${TWILIO_AUTH_TOKEN}",
+    "from_number": "+10000000000",
+    "sms_to": "+10000000000",
+    "voice_to": "+10000000000"
+  },
+  "http": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8080
+  },
+  "storage": {
+    "path": "data/app.db"
+  },
+  "rules_file": "config/rules.json",
+  "max_retries": 3,
+  "backoff_base_ms": 500,
+  "backoff_max_ms": 8000
+}
