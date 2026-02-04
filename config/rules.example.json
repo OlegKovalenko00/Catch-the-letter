@@ -1,0 +1,19 @@
+﻿{
+  "rules": [
+    {
+      "id": "r1",
+      "name": "University important",
+      "enabled": true,
+      "priority": "important",
+      "match": "all",
+      "conditions": [
+        {"field": "from", "op": "contains", "value": "@university"},
+        {"field": "subject", "op": "contains", "value": "Important"}
+      ],
+      "actions": [
+        {"type": "notify", "channel": "telegram", "text": "Важное письмо: {{subject}}"},
+        {"type": "notify", "channel": "console", "text": "Важно: {{from}} / {{subject}}"}
+      ]
+    }
+  ]
+}
