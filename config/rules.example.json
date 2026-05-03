@@ -1,18 +1,141 @@
-﻿{
+{
   "rules": [
     {
-      "id": "r1",
-      "name": "University important",
+      "id": "hse_forms",
+      "name": "HSE forms and surveys",
       "enabled": true,
-      "priority": "important",
-      "match": "all",
-      "conditions": [
-        {"field": "from", "op": "contains", "value": "@university"},
-        {"field": "subject", "op": "contains", "value": "Important"}
-      ],
+      "priority": 100,
+      "match": {
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "subject",
+            "op": "regex_i",
+            "value": "(опрос|анкета|форма|оценка|регистрация|заполните|survey|form|questionnaire)"
+          },
+          {
+            "field": "body_text",
+            "op": "regex_i",
+            "value": "(опрос|анкета|форма|оценка|регистрация|заполните|survey|form|questionnaire)"
+          },
+          {
+            "field": "links.domain",
+            "op": "domain_in",
+            "value": [
+              "portal.hse.ru",
+              "forms.yandex.ru",
+              "docs.google.com",
+              "forms.gle",
+              "forms.office.com",
+              "forms.microsoft.com",
+              "lms.hse.ru",
+              "smartlms.hse.ru"
+            ]
+          }
+        ]
+      },
       "actions": [
-        {"type": "notify", "channel": "telegram", "text": "Важное письмо: {{subject}}"},
-        {"type": "notify", "channel": "console", "text": "Важно: {{from}} / {{subject}}"}
+        {
+          "type": "classify"
+        },
+        {
+          "type": "detect_form"
+        },
+        {
+          "type": "notify",
+          "channel": "telegram",
+          "text": "Найдена потенциальная форма: {{subject}}"
+        }
+      ]
+    },
+    {
+      "id": "important_hse_notifications_subject",
+      "name": "Important HSE notifications by subject",
+      "enabled": true,
+      "priority": 70,
+      "match": {
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "from",
+            "op": "contains_i",
+            "value": "@hse.ru"
+          },
+          {
+            "field": "subject",
+            "op": "regex_i",
+            "value": "(важно|срочно|дедлайн|экзамен|оценивание|lms|smartlms)"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "classify"
+        },
+        {
+          "type": "notify",
+          "channel": "telegram",
+          "text": "Важное письмо ВШЭ: {{subject}}"
+        }
+      ]
+    },
+    {
+      "id": "important_hse_notifications_body",
+      "name": "Important HSE notifications by body",
+      "enabled": true,
+      "priority": 69,
+      "match": {
+        "mode": "all",
+        "conditions": [
+          {
+            "field": "from",
+            "op": "contains_i",
+            "value": "@hse.ru"
+          },
+          {
+            "field": "body_text",
+            "op": "regex_i",
+            "value": "(важно|срочно|дедлайн|экзамен|оценивание|lms|smartlms)"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "classify"
+        },
+        {
+          "type": "notify",
+          "channel": "telegram",
+          "text": "Важное письмо ВШЭ: {{subject}}"
+        }
+      ]
+    },
+    {
+      "id": "important_notifications",
+      "name": "Important notifications",
+      "enabled": true,
+      "priority": 50,
+      "match": {
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "subject",
+            "op": "regex_i",
+            "value": "(дедлайн|важно|срочно|напоминание|deadline|important)"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "notify",
+          "channel": "telegram",
+          "text": "Важное письмо: {{subject}}"
+        },
+        {
+          "type": "notify",
+          "channel": "console",
+          "text": "Важно: {{from}} / {{subject}}"
+        }
       ]
     }
   ]

@@ -5,8 +5,16 @@
 
 enum class cond_op {
   contains,
+  contains_i,
+  not_contains,
   equals,
-  regex
+  not_equals,
+  regex,
+  regex_i,
+  contains_any,
+  contains_any_i,
+  exists,
+  domain_in
 };
 
 enum class match_mode {
@@ -18,6 +26,7 @@ struct condition {
   std::string field;
   cond_op op;
   std::string value;
+  std::vector<std::string> values;
 };
 
 struct action {

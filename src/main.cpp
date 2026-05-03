@@ -12,9 +12,52 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 mail_client* make_mail_client_mock();
 telegram_notifier* make_telegram_notifier_mock();
+
+class synthetic_mail_client final : public mail_client {
+public:
+  explicit synthetic_mail_client(message msg) : msg(std::move(msg)) {}
+
+  std::uint64_t fetch_max_uid() override {
+    return 0;
+  }
+
+  std::vector<message> fetch_after_uid(std::uint64_t last_seen_uid) override {
+    if (last_seen_uid >= 1) return {};
+    return {msg};
+  }
+
+private:
+  message msg;
+};
+
+static std::string host_from_url(const std::string& url) {
+  auto scheme = url.find("://");
+  size_t start = scheme == std::string::npos ? 0 : scheme + 3;
+  size_t end = url.find('/', start);
+  std::string host = url.substr(start, end == std::string::npos ? std::string::npos : end - start);
+  auto colon = host.find(':');
+  if (colon != std::string::npos) host = host.substr(0, colon);
+  return host;
+}
+
+static message make_demo_message(const std::string& url, const std::string& subject) {
+  message msg;
+  msg.uid = "1";
+  msg.message_id = "<demo@catch-the-letter>";
+  msg.from = "dean@university.edu";
+  msg.to = "student@example.com";
+  msg.subject = subject;
+  msg.snippet = "Please fill this form.";
+  msg.body = "Please fill this form: " + url;
+  msg.body_text = msg.body;
+  msg.date_iso = "2026-05-03";
+  msg.links.push_back({url, host_from_url(url), 0.95});
+  return msg;
+}
 
 static rule make_rule_university_important() {
   rule r;
@@ -36,10 +79,18 @@ static rule make_rule_university_important() {
   r.conditions.push_back(c2);
 
   action a1;
-  a1.type = "notify";
-  a1.channel = "console";
-  a1.text = "Важное письмо: {{subject}}";
+  a1.type = "classify";
   r.actions.push_back(a1);
+
+  action a2;
+  a2.type = "detect_form";
+  r.actions.push_back(a2);
+
+  action a3;
+  a3.type = "notify";
+  a3.channel = "console";
+  a3.text = "Важное письмо: {{subject}}";
+  r.actions.push_back(a3);
 
   return r;
 }
@@ -54,24 +105,46 @@ static void ensure_parent_dir(const std::string& path) {
 int main(int argc, char** argv) {
   std::string config_path = "config/app.json";
   bool demo = false;
+  bool demo_auth = false;
   bool once = false;
+  int events_limit_override = 0;
+  std::string log_level_override;
 
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--config" && i + 1 < argc) {
       config_path = argv[++i];
+    } else if (arg == "--events-limit" && i + 1 < argc) {
+      try {
+        events_limit_override = std::stoi(argv[++i]);
+      } catch (...) {
+        std::cerr << "invalid --events-limit" << std::endl;
+        return 1;
+      }
+    } else if (arg == "--log-level" && i + 1 < argc) {
+      log_level_override = argv[++i];
     } else if (arg == "--demo") {
       demo = true;
+    } else if (arg == "--demo-auth") {
+      demo = true;
+      demo_auth = true;
     } else if (arg == "--once") {
       once = true;
     } else if (arg == "--help") {
-      std::cout << "Usage: catch_the_letter --config <path> [--once]" << std::endl;
+      std::cout << "Usage: catch_the_letter --config <path> [--once] [--demo] [--demo-auth] "
+                   "[--events-limit N] [--log-level LEVEL]"
+                << std::endl;
       return 0;
     }
   }
 
   if (demo) {
     app_config cfg;
+    if (events_limit_override > 0) cfg.events_limit = events_limit_override;
+    if (!log_level_override.empty()) cfg.log_level = log_level_override;
+    const char* endpoint_env = std::getenv("BROWSER_WORKER_ENDPOINT");
+    cfg.browser_worker.endpoint = endpoint_env ? endpoint_env : "http://127.0.0.1:8090";
+    cfg.security.allow_private_networks = true;
     cfg.rules_file = "config/rules.demo.json";
     std::vector<rule> demo_rules{make_rule_university_important()};
     std::string demo_json = rules_to_json(demo_rules);
@@ -83,7 +156,9 @@ int main(int argc, char** argv) {
     std::string err;
     ensure_parent_dir(cfg.storage.path);
     std::unique_ptr<storage> store(make_sqlite_storage(cfg.storage.path, &err));
-    std::unique_ptr<mail_client> mail(make_mail_client_mock());
+    std::string url = cfg.browser_worker.endpoint + (demo_auth ? "/demo-auth-form" : "/demo-form");
+    std::string subject = demo_auth ? "Important: please fill auth form" : "Important: please fill form";
+    std::unique_ptr<mail_client> mail(new synthetic_mail_client(make_demo_message(url, subject)));
     std::unique_ptr<telegram_notifier> tg(make_telegram_notifier_mock());
 
     app application(cfg, std::move(mail), std::move(tg), std::move(store), nullptr);
@@ -97,6 +172,8 @@ int main(int argc, char** argv) {
     std::cerr << "config error: " << err << std::endl;
     return 1;
   }
+  if (events_limit_override > 0) cfg.events_limit = events_limit_override;
+  if (!log_level_override.empty()) cfg.log_level = log_level_override;
 
   ensure_parent_dir(cfg.storage.path);
 
@@ -107,6 +184,10 @@ int main(int argc, char** argv) {
   }
 
   std::unique_ptr<telegram_notifier> tg;
+  if (cfg.telegram.enabled && (cfg.telegram.bot_token.empty() || cfg.telegram.chat_id.empty())) {
+    std::cerr << "telegram disabled: token or chat_id is missing" << std::endl;
+    cfg.telegram.enabled = false;
+  }
   if (cfg.telegram.enabled) {
     tg.reset(make_telegram_notifier_http(cfg.telegram, &err));
     if (!tg) {
@@ -132,17 +213,54 @@ int main(int argc, char** argv) {
   if (cfg.http.enabled) {
     http_handlers handlers;
     handlers.get_status_json = [&application]() { return application.status_json(); };
+    handlers.get_events_json = [&application](int limit) { return application.events_json(limit); };
     handlers.get_rules_json = [&application]() { return application.rules_json(); };
     handlers.set_rules_json = [&application](const std::string& text, std::string& e) {
       return application.update_rules_json(text, e);
     };
+    handlers.get_active_forms_json = [&application]() { return application.active_forms_json(); };
+    handlers.get_form_json = [&application](const std::string& id) { return application.form_json(id); };
+    handlers.update_form_field_json = [&application](const std::string& id, const std::string& body, std::string& e) {
+      return application.update_form_field_json(id, body, e);
+    };
+    handlers.fill_form = [&application](const std::string& id, std::string& e) {
+      return application.fill_form(id, e);
+    };
+    handlers.submit_form = [&application](const std::string& id, std::string& e) {
+      return application.submit_form(id, e);
+    };
+    handlers.manual_form = [&application](const std::string& id, std::string& e) {
+      return application.mark_form_manual(id, e);
+    };
+    handlers.cancel_form = [&application](const std::string& id, std::string& e) {
+      return application.cancel_form(id, e);
+    };
+    handlers.auth_credentials = [&application](const std::string& id, const std::string& body, std::string& e) {
+      return application.auth_credentials(id, body, e);
+    };
+    handlers.auth_two_factor = [&application](const std::string& id, const std::string& body, std::string& e) {
+      return application.auth_two_factor(id, body, e);
+    };
+    handlers.reinspect_form = [&application](const std::string& id, std::string& e) {
+      return application.reinspect_form(id, e);
+    };
+    handlers.get_profile_json = [&application]() { return application.profile_json(); };
+    handlers.set_profile_json = [&application](const std::string& body, std::string& e) {
+      return application.update_profile_json(body, e);
+    };
+    handlers.get_config_json = [&application]() { return application.config_json(); };
+    handlers.test_browser_json = [&application]() { return application.test_browser_json(); };
+    handlers.test_llm_json = [&application]() { return application.test_llm_json(); };
+    handlers.test_telegram_json = [&application]() { return application.test_telegram_json(); };
     server = make_http_server(cfg.http, handlers, err);
     if (!server->start()) {
       std::cerr << "http server failed" << std::endl;
     }
   }
 
+  if (!once) application.start_async_services();
   application.run(once);
+  application.stop_async_services();
 
   if (server) server->stop();
   return 0;

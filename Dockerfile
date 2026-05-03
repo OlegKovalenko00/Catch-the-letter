@@ -1,8 +1,8 @@
-﻿FROM ubuntu:22.04 AS build
+FROM ubuntu:22.04 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates \
-    libcurl4-openssl-dev libsqlite3-dev \
+    libcurl4-openssl-dev libsqlite3-dev nlohmann-json3-dev libcpp-httplib-dev \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,4 +21,4 @@ COPY --from=build /app/build/catch_the_letter /app/catch_the_letter
 COPY config /app/config
 
 EXPOSE 8080
-ENTRYPOINT ["/app/catch_the_letter","--config","/app/config/app.json"]
+ENTRYPOINT ["/app/catch_the_letter"]

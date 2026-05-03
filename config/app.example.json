@@ -1,0 +1,76 @@
+{
+  "app": {
+    "poll_interval_seconds": 20,
+    "events_limit": 200,
+    "log_level": "info"
+  },
+  "imap": {
+    "mailbox_id": "main_yandex",
+    "host": "imap.yandex.com",
+    "port": 993,
+    "tls": true,
+    "username": "${IMAP_USERNAME}",
+    "password": "${IMAP_PASSWORD}",
+    "folder": "INBOX",
+    "mark_seen": false
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "chat_id": "${TELEGRAM_CHAT_ID}",
+    "poll_updates": true,
+    "poll_interval_seconds": 2
+  },
+  "twilio": {
+    "enabled": false,
+    "account_sid": "${TWILIO_ACCOUNT_SID}",
+    "auth_token": "${TWILIO_AUTH_TOKEN}",
+    "from_number": "+10000000000",
+    "sms_to": "+10000000000",
+    "voice_to": "+10000000000"
+  },
+  "http": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "storage": {
+    "path": "data/app.db"
+  },
+  "profile_file": "/app/config/profile.json",
+  "browser_worker": {
+    "enabled": true,
+    "endpoint": "http://browser-worker:8090",
+    "timeout_seconds": 60
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "ollama",
+    "endpoint": "http://ollama:11434/api/chat",
+    "model": "qwen3:8b",
+    "privacy_mode": "safe",
+    "timeout_seconds": 120
+  },
+  "security": {
+    "mode": "open",
+    "allow_private_networks": false,
+    "auto_submit": false,
+    "require_confirmation_before_submit": true,
+    "allow_password_via_telegram": false,
+    "allowed_domains": [],
+    "blocked_domains": []
+  },
+  "auth": {
+    "enabled": true,
+    "allow_credentials_via_telegram": false,
+    "allow_credentials_via_web": true,
+    "remember_credentials": false,
+    "credentials_storage": "memory",
+    "two_factor_via_telegram": true,
+    "two_factor_via_web": true
+  },
+  "rules_file": "config/rules.json",
+  "max_retries": 3,
+  "backoff_base_ms": 500,
+  "backoff_max_ms": 8000
+}

@@ -1,0 +1,20 @@
+{
+  "role": "student",
+  "full_name": "",
+  "last_name": "",
+  "first_name": "",
+  "middle_name": "",
+  "hse_email": "",
+  "personal_email": "",
+  "phone": "",
+  "campus": "",
+  "faculty": "",
+  "programme": "",
+  "education_level": "",
+  "course_year": "",
+  "student_group": "",
+  "student_id_number": "",
+  "record_book_number": "",
+  "telegram_username": "",
+  "custom": {}
+}

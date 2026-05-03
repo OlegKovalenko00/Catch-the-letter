@@ -69,6 +69,30 @@ static bool get_bool(const json& obj, const char* key, bool def) {
   return def;
 }
 
+static std::string json_to_string(const json& value, const std::string& def = "") {
+  if (value.is_string()) return value.get<std::string>();
+  if (value.is_number_integer()) return std::to_string(value.get<long long>());
+  if (value.is_number_unsigned()) return std::to_string(value.get<unsigned long long>());
+  if (value.is_number_float()) return std::to_string(value.get<double>());
+  if (value.is_boolean()) return value.get<bool>() ? "true" : "false";
+  return def;
+}
+
+static std::vector<std::string> json_to_string_vector(const json& value) {
+  std::vector<std::string> result;
+  if (value.is_array()) {
+    for (const auto& item : value) {
+      std::string text = json_to_string(item);
+      if (!text.empty()) result.push_back(std::move(text));
+    }
+    return result;
+  }
+
+  std::string text = json_to_string(value);
+  if (!text.empty()) result.push_back(std::move(text));
+  return result;
+}
+
 bool load_app_config(const std::string& path, app_config& out, std::string& err) {
   std::string text;
   if (!json_util::read_file(path, text, &err)) return false;
@@ -82,6 +106,7 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   }
 
   const json imap = root.value("imap", json::object());
+  out.imap.mailbox_id = get_string(imap, "mailbox_id", out.imap.mailbox_id);
   out.imap.host = get_string(imap, "host");
   out.imap.port = get_int(imap, "port", out.imap.port);
   out.imap.tls = get_bool(imap, "tls", out.imap.tls);
@@ -95,6 +120,9 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.telegram.enabled = get_bool(telegram, "enabled", out.telegram.enabled);
   out.telegram.bot_token = get_string(telegram, "bot_token");
   out.telegram.chat_id = get_string(telegram, "chat_id");
+  out.telegram.poll_updates = get_bool(telegram, "poll_updates", out.telegram.poll_updates);
+  out.telegram.poll_interval_seconds =
+      get_int(telegram, "poll_interval_seconds", out.telegram.poll_interval_seconds);
 
   const json twilio = root.value("twilio", json::object());
   out.twilio.enabled = get_bool(twilio, "enabled", out.twilio.enabled);
@@ -112,10 +140,67 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   const json storage = root.value("storage", json::object());
   out.storage.path = get_string(storage, "path", out.storage.path);
 
+  const json browser_worker = root.value("browser_worker", json::object());
+  out.browser_worker.enabled = get_bool(browser_worker, "enabled", out.browser_worker.enabled);
+  out.browser_worker.endpoint = get_string(browser_worker, "endpoint", out.browser_worker.endpoint);
+  out.browser_worker.timeout_seconds =
+      get_int(browser_worker, "timeout_seconds", out.browser_worker.timeout_seconds);
+
+  const json llm = root.value("llm", json::object());
+  out.llm.enabled = get_bool(llm, "enabled", out.llm.enabled);
+  out.llm.provider = get_string(llm, "provider", out.llm.provider);
+  out.llm.endpoint = get_string(llm, "endpoint", out.llm.endpoint);
+  out.llm.model = get_string(llm, "model", out.llm.model);
+  out.llm.privacy_mode = get_string(llm, "privacy_mode", out.llm.privacy_mode);
+  out.llm.timeout_seconds = get_int(llm, "timeout_seconds", out.llm.timeout_seconds);
+
+  const json security = root.value("security", json::object());
+  out.security.mode = get_string(security, "mode", out.security.mode);
+  out.security.allow_private_networks =
+      get_bool(security, "allow_private_networks", out.security.allow_private_networks);
+  out.security.auto_submit = get_bool(security, "auto_submit", out.security.auto_submit);
+  out.security.require_confirmation_before_submit = get_bool(
+      security,
+      "require_confirmation_before_submit",
+      out.security.require_confirmation_before_submit
+  );
+  out.security.allow_password_via_telegram = get_bool(
+      security,
+      "allow_password_via_telegram",
+      out.security.allow_password_via_telegram
+  );
+  out.security.allowed_domains =
+      json_to_string_vector(security.value("allowed_domains", json::array()));
+  out.security.blocked_domains =
+      json_to_string_vector(security.value("blocked_domains", json::array()));
+
+  const json auth = root.value("auth", json::object());
+  out.auth.enabled = get_bool(auth, "enabled", out.auth.enabled);
+  out.auth.allow_credentials_via_telegram =
+      get_bool(auth, "allow_credentials_via_telegram", out.auth.allow_credentials_via_telegram);
+  out.auth.allow_credentials_via_web =
+      get_bool(auth, "allow_credentials_via_web", out.auth.allow_credentials_via_web);
+  out.auth.remember_credentials = get_bool(auth, "remember_credentials", out.auth.remember_credentials);
+  out.auth.credentials_storage = get_string(auth, "credentials_storage", out.auth.credentials_storage);
+  out.auth.two_factor_via_telegram =
+      get_bool(auth, "two_factor_via_telegram", out.auth.two_factor_via_telegram);
+  out.auth.two_factor_via_web =
+      get_bool(auth, "two_factor_via_web", out.auth.two_factor_via_web);
+
+  out.profile_file = get_string(root, "profile_file", out.profile_file);
   out.rules_file = get_string(root, "rules_file", out.rules_file);
   out.max_retries = get_int(root, "max_retries", out.max_retries);
   out.backoff_base_ms = get_int(root, "backoff_base_ms", out.backoff_base_ms);
   out.backoff_max_ms = get_int(root, "backoff_max_ms", out.backoff_max_ms);
+
+  const json app = root.value("app", json::object());
+  out.events_limit = get_int(app, "events_limit", get_int(root, "events_limit", out.events_limit));
+  out.log_level = get_string(app, "log_level", get_string(root, "log_level", out.log_level));
+  out.imap.poll_interval_sec = get_int(
+      app,
+      "poll_interval_seconds",
+      out.imap.poll_interval_sec
+  );
 
   if (out.imap.host.empty()) {
     err = "imap.host обязателен";
@@ -139,13 +224,45 @@ static cond_op parse_op(const std::string& s, bool* ok) {
     if (ok) *ok = true;
     return cond_op::contains;
   }
+  if (v == "contains_i") {
+    if (ok) *ok = true;
+    return cond_op::contains_i;
+  }
+  if (v == "not_contains") {
+    if (ok) *ok = true;
+    return cond_op::not_contains;
+  }
   if (v == "equals") {
     if (ok) *ok = true;
     return cond_op::equals;
   }
+  if (v == "not_equals") {
+    if (ok) *ok = true;
+    return cond_op::not_equals;
+  }
   if (v == "regex") {
     if (ok) *ok = true;
     return cond_op::regex;
+  }
+  if (v == "regex_i") {
+    if (ok) *ok = true;
+    return cond_op::regex_i;
+  }
+  if (v == "contains_any") {
+    if (ok) *ok = true;
+    return cond_op::contains_any;
+  }
+  if (v == "contains_any_i") {
+    if (ok) *ok = true;
+    return cond_op::contains_any_i;
+  }
+  if (v == "exists") {
+    if (ok) *ok = true;
+    return cond_op::exists;
+  }
+  if (v == "domain_in") {
+    if (ok) *ok = true;
+    return cond_op::domain_in;
   }
   if (ok) *ok = false;
   return cond_op::contains;
@@ -183,22 +300,31 @@ bool load_rules(const std::string& path, std::vector<rule>& out, std::string& er
   for (const auto& rj : rules_json) {
     if (!rj.is_object()) continue;
     rule r;
-    r.id = rj.value("id", "");
-    r.name = rj.value("name", "");
+    r.id = json_to_string(rj.value("id", json("")));
+    r.name = json_to_string(rj.value("name", json("")));
+    if (r.name.empty()) r.name = r.id;
     r.enabled = rj.value("enabled", true);
-    r.priority = rj.value("priority", "info");
-    r.match = parse_match(rj.value("match", "all"));
+    r.priority = json_to_string(rj.value("priority", json("info")), "info");
 
-    const auto conds = rj.value("conditions", json::array());
+    json conds = rj.value("conditions", json::array());
+    if (rj.contains("match") && rj["match"].is_object()) {
+      const auto& match_obj = rj["match"];
+      r.match = parse_match(json_to_string(match_obj.value("mode", json("all")), "all"));
+      conds = match_obj.value("conditions", json::array());
+    } else {
+      r.match = parse_match(json_to_string(rj.value("match", json("all")), "all"));
+    }
+
     if (conds.is_array()) {
       for (const auto& cj : conds) {
         if (!cj.is_object()) continue;
         condition c;
-        c.field = cj.value("field", "");
+        c.field = json_to_string(cj.value("field", json("")));
         bool ok = false;
-        c.op = parse_op(cj.value("op", "contains"), &ok);
-        c.value = cj.value("value", "");
-        if (c.field.empty() || c.value.empty() || !ok) continue;
+        c.op = parse_op(json_to_string(cj.value("op", json("contains")), "contains"), &ok);
+        c.values = json_to_string_vector(cj.value("value", json("")));
+        c.value = c.values.empty() ? "" : c.values.front();
+        if (c.field.empty() || (!cj.contains("value") && c.op != cond_op::exists) || !ok) continue;
         r.conditions.push_back(c);
       }
     }
@@ -208,9 +334,9 @@ bool load_rules(const std::string& path, std::vector<rule>& out, std::string& er
       for (const auto& aj : acts) {
         if (!aj.is_object()) continue;
         action a;
-        a.type = aj.value("type", "notify");
-        a.channel = aj.value("channel", "telegram");
-        a.text = aj.value("text", "");
+        a.type = json_to_string(aj.value("type", json("notify")), "notify");
+        a.channel = json_to_string(aj.value("channel", json("telegram")), "telegram");
+        a.text = json_to_string(aj.value("text", json("")));
         if (a.text.empty()) a.text = r.name;
         r.actions.push_back(a);
       }
@@ -241,14 +367,42 @@ static json rule_to_json(const rule& r) {
       case cond_op::contains:
         cj["op"] = "contains";
         break;
+      case cond_op::contains_i:
+        cj["op"] = "contains_i";
+        break;
+      case cond_op::not_contains:
+        cj["op"] = "not_contains";
+        break;
       case cond_op::equals:
         cj["op"] = "equals";
+        break;
+      case cond_op::not_equals:
+        cj["op"] = "not_equals";
         break;
       case cond_op::regex:
         cj["op"] = "regex";
         break;
+      case cond_op::regex_i:
+        cj["op"] = "regex_i";
+        break;
+      case cond_op::contains_any:
+        cj["op"] = "contains_any";
+        break;
+      case cond_op::contains_any_i:
+        cj["op"] = "contains_any_i";
+        break;
+      case cond_op::exists:
+        cj["op"] = "exists";
+        break;
+      case cond_op::domain_in:
+        cj["op"] = "domain_in";
+        break;
     }
-    cj["value"] = c.value;
+    if (c.values.size() > 1) {
+      cj["value"] = c.values;
+    } else {
+      cj["value"] = c.value;
+    }
     conds.push_back(cj);
   }
   obj["conditions"] = conds;
