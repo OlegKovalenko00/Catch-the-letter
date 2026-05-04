@@ -1,8 +1,8 @@
 FROM ubuntu:22.04 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake git ca-certificates \
-    libcurl4-openssl-dev libsqlite3-dev nlohmann-json3-dev libcpp-httplib-dev \
+    build-essential cmake ca-certificates \
+    libcurl4-openssl-dev libsqlite3-dev \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

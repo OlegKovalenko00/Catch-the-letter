@@ -14,7 +14,9 @@ enum class cond_op {
   contains_any,
   contains_any_i,
   exists,
-  domain_in
+  domain_in,
+  date_before,
+  date_after
 };
 
 enum class match_mode {

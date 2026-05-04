@@ -34,6 +34,15 @@ struct app_status {
   int matched_last = 0;
 };
 
+struct mailbox_runtime {
+  imap_config cfg;
+  std::unique_ptr<mail_client> client;
+  std::string last_check;
+  std::string last_error;
+  std::uint64_t last_seen_uid = 0;
+  int matched_last = 0;
+};
+
 class app {
 public:
   app(app_config cfg,
@@ -50,7 +59,7 @@ public:
   std::string events_json(int limit) const;
   std::string rules_json() const;
   bool update_rules_json(const std::string& text, std::string& err);
-  std::string active_forms_json() const;
+  std::string active_forms_json(bool all = false) const;
   std::string form_json(const std::string& id) const;
   bool update_form_field_json(const std::string& id, const std::string& body, std::string& err);
   bool fill_form(const std::string& id, std::string& err);
@@ -66,9 +75,10 @@ public:
   std::string test_browser_json();
   std::string test_llm_json();
   std::string test_telegram_json();
+  bool create_demo_form(bool auth_demo, std::string& err);
 
 private:
-  mailbox_checkpoint ensure_checkpoint();
+  mailbox_checkpoint ensure_checkpoint(mailbox_runtime& mailbox);
   void load_rules_if_changed();
   bool send_action(const message& msg, const action& a, std::string& err);
   void append_event(std::string level,
@@ -77,7 +87,7 @@ private:
                     nlohmann::json data = nlohmann::json::object());
 
   app_config cfg;
-  std::unique_ptr<mail_client> mail_client_ptr;
+  std::vector<mailbox_runtime> mailboxes;
   std::unique_ptr<telegram_notifier> telegram_notifier_ptr;
   std::unique_ptr<storage> storage_ptr;
   std::unique_ptr<twilio_notifier> twilio_ptr;

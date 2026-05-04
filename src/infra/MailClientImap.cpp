@@ -98,7 +98,14 @@ std::string quoted_printable_decode(const std::string& input, bool header_mode) 
       continue;
     }
     if (c == '=' && i + 2 < input.size()) {
-      if (input[i + 1] == '\r' || input[i + 1] == '\n') continue;
+      if (input[i + 1] == '\r' && input[i + 2] == '\n') {
+        i += 2;
+        continue;
+      }
+      if (input[i + 1] == '\n') {
+        i += 1;
+        continue;
+      }
       int hi = hex_value(input[i + 1]);
       int lo = hex_value(input[i + 2]);
       if (hi >= 0 && lo >= 0) {
@@ -194,6 +201,22 @@ std::string strip_html_tags(std::string html) {
   return trim(html);
 }
 
+std::string html_entity_decode(std::string text) {
+  auto replace_all = [](std::string& s, const std::string& from, const std::string& to) {
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+      s.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  };
+  replace_all(text, "&amp;", "&");
+  replace_all(text, "&lt;", "<");
+  replace_all(text, "&gt;", ">");
+  replace_all(text, "&quot;", "\"");
+  replace_all(text, "&#39;", "'");
+  return text;
+}
+
 std::string snippet_from_body(const std::string& body, size_t max_len = 200) {
   std::string s = body;
   for (auto& c : s) {
@@ -229,10 +252,12 @@ double estimate_form_link_confidence(const std::string& url) {
   std::string lower = to_lower(url);
   if (lower.find("forms.yandex.") != std::string::npos) return 0.95;
   if (lower.find("docs.google.com/forms") != std::string::npos) return 0.95;
+  if (lower.find("forms.gle") != std::string::npos) return 0.95;
   if (lower.find("forms.office.com") != std::string::npos) return 0.95;
   if (lower.find("forms.microsoft.com") != std::string::npos) return 0.95;
   if (lower.find("portal.hse.ru/poll") != std::string::npos) return 0.9;
-  if (lower.find("lms.hse.ru") != std::string::npos) return 0.7;
+  if (lower.find("lms.hse.ru") != std::string::npos) return 0.85;
+  if (lower.find("smartlms.hse.ru") != std::string::npos) return 0.85;
   if (lower.find("form") != std::string::npos || lower.find("poll") != std::string::npos) return 0.6;
   return 0.2;
 }
@@ -243,9 +268,24 @@ void collect_links(const std::string& text, std::vector<link>& result, std::set<
   auto begin = std::sregex_iterator(text.begin(), text.end(), url_regex);
   auto end = std::sregex_iterator();
   for (auto it = begin; it != end; ++it) {
-    std::string url = sanitize_url((*it)[1].str());
+    std::string url = sanitize_url(html_entity_decode((*it)[1].str()));
     if (url.empty() || !seen.insert(url).second) continue;
 
+    link item;
+    item.url = url;
+    item.domain = extract_domain(url);
+    item.confidence = estimate_form_link_confidence(url);
+    result.push_back(std::move(item));
+  }
+}
+
+void collect_href_links(const std::string& html, std::vector<link>& result, std::set<std::string>& seen) {
+  static const std::regex href_regex(R"(href\s*=\s*["'](https?://[^"']+)["'])", std::regex::icase);
+  auto begin = std::sregex_iterator(html.begin(), html.end(), href_regex);
+  auto end = std::sregex_iterator();
+  for (auto it = begin; it != end; ++it) {
+    std::string url = sanitize_url(html_entity_decode((*it)[1].str()));
+    if (url.empty() || !seen.insert(url).second) continue;
     link item;
     item.url = url;
     item.domain = extract_domain(url);
@@ -259,6 +299,7 @@ std::vector<link> extract_links(const std::string& text, const std::string& html
   std::set<std::string> seen;
   collect_links(text, result, seen);
   collect_links(html, result, seen);
+  collect_href_links(html, result, seen);
   return result;
 }
 
@@ -377,6 +418,7 @@ private:
     split_headers_body(response, headers, body);
 
     msg.mailbox_id = cfg.mailbox_id;
+    msg.provider = cfg.provider;
     msg.uid = uid;
     msg.message_id = get_header(headers, "Message-ID");
     msg.from = get_header(headers, "From");

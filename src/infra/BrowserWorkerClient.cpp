@@ -207,8 +207,33 @@ bool browser_worker_client::fill_form(const std::string& browser_session_id,
 }
 
 bool browser_worker_client::submit_form(const std::string& browser_session_id, std::string& err) const {
+  auto result = submit_form_result(browser_session_id, err);
+  return result.ok && result.submitted;
+}
+
+browser_submit_result browser_worker_client::submit_form_result(const std::string& browser_session_id,
+                                                                std::string& err) const {
+  browser_submit_result result;
   json response;
-  return post_json("/submit-form", {{"session_id", browser_session_id}}, response, err);
+  if (!post_json("/submit-form", {{"session_id", browser_session_id}}, response, err)) {
+    result.error = err;
+    return result;
+  }
+  result.ok = true;
+  result.submitted = response.value("submitted", false);
+  result.needs_next = response.value("status", "") == "needs_next";
+  result.error = response.value("error", "");
+  if (response.contains("fields") && response["fields"].is_array()) {
+    for (const auto& item : response["fields"]) result.fields.push_back(parse_field(item));
+  }
+  if (!result.submitted && !result.needs_next) {
+    result.ok = false;
+    if (result.error.empty()) result.error = "form was not submitted";
+    err = result.error;
+  } else {
+    err.clear();
+  }
+  return result;
 }
 
 bool browser_worker_client::close_session(const std::string& browser_session_id, std::string& err) const {

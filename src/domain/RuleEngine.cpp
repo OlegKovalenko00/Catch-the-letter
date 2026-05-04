@@ -28,6 +28,7 @@ static std::vector<std::string> field_values(const message& msg, const std::stri
   if (field == "received_at" || field == "date") return {msg.date_iso};
   if (field == "uid") return {msg.uid};
   if (field == "mailbox_id") return {msg.mailbox_id};
+  if (field == "provider") return {msg.provider};
   if (field == "links.url") {
     std::vector<std::string> values;
     for (const auto& item : msg.links) values.push_back(item.url);
@@ -158,6 +159,20 @@ static bool check_condition(const message& msg, const condition& cond) {
 
   if (cond.op == cond_op::domain_in) {
     return any_domain_in(values, cond.values);
+  }
+
+  if (cond.op == cond_op::date_before) {
+    for (const auto& value : values) {
+      if (!value.empty() && value < cond.value) return true;
+    }
+    return false;
+  }
+
+  if (cond.op == cond_op::date_after) {
+    for (const auto& value : values) {
+      if (!value.empty() && value > cond.value) return true;
+    }
+    return false;
   }
 
   return false;

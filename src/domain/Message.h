@@ -17,6 +17,7 @@ struct attachment {
 
 struct message {
   std::string mailbox_id = "default";
+  std::string provider;
   std::string uid;
   std::string message_id;
   std::string from;

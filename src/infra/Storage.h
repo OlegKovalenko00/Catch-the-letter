@@ -57,7 +57,7 @@ public:
   virtual std::vector<event_record> last_events(int limit) const = 0;
   virtual std::string create_form_session(const form_session& session) = 0;
   virtual std::optional<form_session> get_form_session(const std::string& id) = 0;
-  virtual std::vector<form_session> list_active_form_sessions() = 0;
+  virtual std::vector<form_session> list_active_form_sessions(bool all = false) = 0;
   virtual void update_form_session(const form_session& session) = 0;
   virtual void update_form_session_status(const std::string& id, const std::string& status) = 0;
   virtual void save_telegram_dialog(const telegram_dialog& dialog) = 0;

@@ -93,6 +93,49 @@ static std::vector<std::string> json_to_string_vector(const json& value) {
   return result;
 }
 
+static std::string get_env_value(const json& obj, const char* key) {
+  std::string env_key = get_string(obj, key);
+  if (env_key.empty()) return "";
+  const char* val = std::getenv(env_key.c_str());
+  return val ? std::string(val) : "";
+}
+
+static void apply_provider_preset(imap_config& cfg) {
+  std::string provider = to_lower(cfg.provider);
+  if (provider == "yandex") {
+    if (cfg.host.empty()) cfg.host = "imap.yandex.com";
+    if (cfg.port == 0) cfg.port = 993;
+    cfg.tls = true;
+    return;
+  }
+  if (provider == "gmail") {
+    if (cfg.host.empty()) cfg.host = "imap.gmail.com";
+    if (cfg.port == 0) cfg.port = 993;
+    cfg.tls = true;
+  }
+}
+
+static imap_config parse_mailbox_config(const json& mailbox, const imap_config& defaults) {
+  imap_config cfg = defaults;
+  cfg.mailbox_id = get_string(mailbox, "id", get_string(mailbox, "mailbox_id", cfg.mailbox_id));
+  cfg.provider = get_string(mailbox, "provider", cfg.provider);
+  cfg.email = get_string(mailbox, "email", cfg.email);
+  cfg.auth_method = get_string(mailbox, "auth_method", cfg.auth_method);
+  cfg.host = get_string(mailbox, "imap_host", get_string(mailbox, "host", cfg.host));
+  cfg.port = get_int(mailbox, "imap_port", get_int(mailbox, "port", cfg.port));
+  cfg.tls = get_bool(mailbox, "imap_ssl", get_bool(mailbox, "tls", cfg.tls));
+  cfg.username = get_string(mailbox, "username");
+  if (cfg.username.empty()) cfg.username = get_env_value(mailbox, "username_env");
+  cfg.password = get_string(mailbox, "password");
+  if (cfg.password.empty()) cfg.password = get_env_value(mailbox, "password_env");
+  cfg.folder = get_string(mailbox, "folder", cfg.folder);
+  cfg.checkpoint_mode = get_string(mailbox, "checkpoint_mode", cfg.checkpoint_mode);
+  cfg.poll_interval_sec = get_int(mailbox, "poll_interval_sec", cfg.poll_interval_sec);
+  cfg.mark_seen = get_bool(mailbox, "mark_seen", cfg.mark_seen);
+  apply_provider_preset(cfg);
+  return cfg;
+}
+
 bool load_app_config(const std::string& path, app_config& out, std::string& err) {
   std::string text;
   if (!json_util::read_file(path, text, &err)) return false;
@@ -105,21 +148,31 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
     return false;
   }
 
-  const json imap = root.value("imap", json::object());
-  out.imap.mailbox_id = get_string(imap, "mailbox_id", out.imap.mailbox_id);
-  out.imap.host = get_string(imap, "host");
-  out.imap.port = get_int(imap, "port", out.imap.port);
-  out.imap.tls = get_bool(imap, "tls", out.imap.tls);
-  out.imap.username = get_string(imap, "username");
-  out.imap.password = get_string(imap, "password");
-  out.imap.folder = get_string(imap, "folder", out.imap.folder);
-  out.imap.poll_interval_sec = get_int(imap, "poll_interval_sec", out.imap.poll_interval_sec);
-  out.imap.mark_seen = get_bool(imap, "mark_seen", out.imap.mark_seen);
+  out.mailboxes.clear();
+  if (root.contains("mailboxes") && root["mailboxes"].is_array() && !root["mailboxes"].empty()) {
+    int index = 0;
+    for (const auto& mailbox : root["mailboxes"]) {
+      if (!mailbox.is_object()) continue;
+      imap_config defaults = out.imap;
+      if (defaults.mailbox_id == "main") defaults.mailbox_id = "mailbox_" + std::to_string(index + 1);
+      auto parsed = parse_mailbox_config(mailbox, defaults);
+      if (parsed.mailbox_id.empty()) parsed.mailbox_id = "mailbox_" + std::to_string(index + 1);
+      out.mailboxes.push_back(std::move(parsed));
+      index++;
+    }
+    if (!out.mailboxes.empty()) out.imap = out.mailboxes.front();
+  } else {
+    const json imap = root.value("imap", json::object());
+    out.imap = parse_mailbox_config(imap, out.imap);
+    out.mailboxes.push_back(out.imap);
+  }
 
   const json telegram = root.value("telegram", json::object());
   out.telegram.enabled = get_bool(telegram, "enabled", out.telegram.enabled);
   out.telegram.bot_token = get_string(telegram, "bot_token");
+  if (out.telegram.bot_token.empty()) out.telegram.bot_token = get_env_value(telegram, "bot_token_env");
   out.telegram.chat_id = get_string(telegram, "chat_id");
+  if (out.telegram.chat_id.empty()) out.telegram.chat_id = get_env_value(telegram, "chat_id_env");
   out.telegram.poll_updates = get_bool(telegram, "poll_updates", out.telegram.poll_updates);
   out.telegram.poll_interval_seconds =
       get_int(telegram, "poll_interval_seconds", out.telegram.poll_interval_seconds);
@@ -132,13 +185,15 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.twilio.sms_to = get_string(twilio, "sms_to");
   out.twilio.voice_to = get_string(twilio, "voice_to");
 
-  const json http = root.value("http", json::object());
+  const json http = root.contains("web") ? root.value("web", json::object()) : root.value("http", json::object());
   out.http.enabled = get_bool(http, "enabled", out.http.enabled);
   out.http.host = get_string(http, "host", out.http.host);
   out.http.port = get_int(http, "port", out.http.port);
+  out.http.auth_token = get_string(http, "auth_token", out.http.auth_token);
+  if (out.http.auth_token.empty()) out.http.auth_token = get_env_value(http, "auth_token_env");
 
   const json storage = root.value("storage", json::object());
-  out.storage.path = get_string(storage, "path", out.storage.path);
+  out.storage.path = get_string(storage, "sqlite_path", get_string(storage, "path", out.storage.path));
 
   const json browser_worker = root.value("browser_worker", json::object());
   out.browser_worker.enabled = get_bool(browser_worker, "enabled", out.browser_worker.enabled);
@@ -196,24 +251,17 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   const json app = root.value("app", json::object());
   out.events_limit = get_int(app, "events_limit", get_int(root, "events_limit", out.events_limit));
   out.log_level = get_string(app, "log_level", get_string(root, "log_level", out.log_level));
+  out.timezone = get_string(app, "timezone", out.timezone);
+  out.demo_mode = get_bool(app, "demo_mode", out.demo_mode);
   out.imap.poll_interval_sec = get_int(
       app,
       "poll_interval_seconds",
       out.imap.poll_interval_sec
   );
-
-  if (out.imap.host.empty()) {
-    err = "imap.host обязателен";
-    return false;
+  for (auto& mailbox : out.mailboxes) {
+    mailbox.poll_interval_sec = out.imap.poll_interval_sec;
   }
-  if (out.imap.username.empty()) {
-    err = "imap.username обязателен";
-    return false;
-  }
-  if (out.imap.password.empty()) {
-    err = "imap.password обязателен (можно через ${ENV})";
-    return false;
-  }
+  if (!out.mailboxes.empty()) out.imap = out.mailboxes.front();
 
   return true;
 }
@@ -263,6 +311,14 @@ static cond_op parse_op(const std::string& s, bool* ok) {
   if (v == "domain_in") {
     if (ok) *ok = true;
     return cond_op::domain_in;
+  }
+  if (v == "date_before") {
+    if (ok) *ok = true;
+    return cond_op::date_before;
+  }
+  if (v == "date_after") {
+    if (ok) *ok = true;
+    return cond_op::date_after;
   }
   if (ok) *ok = false;
   return cond_op::contains;
@@ -396,6 +452,12 @@ static json rule_to_json(const rule& r) {
         break;
       case cond_op::domain_in:
         cj["op"] = "domain_in";
+        break;
+      case cond_op::date_before:
+        cj["op"] = "date_before";
+        break;
+      case cond_op::date_after:
+        cj["op"] = "date_after";
         break;
     }
     if (c.values.size() > 1) {

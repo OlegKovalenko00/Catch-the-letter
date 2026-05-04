@@ -1,8 +1,11 @@
 ﻿#include "app/App.h"
 #include "app/Config.h"
 #include "infra/HttpServer.h"
+#include "infra/BrowserWorkerClient.h"
+#include "infra/LlmClient.h"
 #include "infra/MailClient.h"
 #include "infra/Storage.h"
+#include "infra/TelegramBot.h"
 #include "infra/TelegramNotifier.h"
 #include "infra/TwilioNotifier.h"
 
@@ -47,6 +50,8 @@ static std::string host_from_url(const std::string& url) {
 static message make_demo_message(const std::string& url, const std::string& subject) {
   message msg;
   msg.uid = "1";
+  msg.mailbox_id = "demo";
+  msg.provider = "demo";
   msg.message_id = "<demo@catch-the-letter>";
   msg.from = "dean@university.edu";
   msg.to = "student@example.com";
@@ -107,6 +112,10 @@ int main(int argc, char** argv) {
   bool demo = false;
   bool demo_auth = false;
   bool once = false;
+  bool test_config = false;
+  bool test_browser = false;
+  bool test_llm = false;
+  bool test_telegram = false;
   int events_limit_override = 0;
   std::string log_level_override;
 
@@ -130,8 +139,17 @@ int main(int argc, char** argv) {
       demo_auth = true;
     } else if (arg == "--once") {
       once = true;
+    } else if (arg == "--test-config") {
+      test_config = true;
+    } else if (arg == "--test-browser") {
+      test_browser = true;
+    } else if (arg == "--test-llm") {
+      test_llm = true;
+    } else if (arg == "--test-telegram") {
+      test_telegram = true;
     } else if (arg == "--help") {
       std::cout << "Usage: catch_the_letter --config <path> [--once] [--demo] [--demo-auth] "
+                   "[--test-config] [--test-browser] [--test-llm] [--test-telegram] "
                    "[--events-limit N] [--log-level LEVEL]"
                 << std::endl;
       return 0;
@@ -168,6 +186,11 @@ int main(int argc, char** argv) {
 
   app_config cfg;
   std::string err;
+  if (!std::filesystem::exists(config_path) &&
+      std::filesystem::path(config_path).filename() == "app.json") {
+    auto fallback = std::filesystem::path(config_path).parent_path() / "app.example.json";
+    if (std::filesystem::exists(fallback)) config_path = fallback.string();
+  }
   if (!load_app_config(config_path, cfg, err)) {
     std::cerr << "config error: " << err << std::endl;
     return 1;
@@ -175,13 +198,46 @@ int main(int argc, char** argv) {
   if (events_limit_override > 0) cfg.events_limit = events_limit_override;
   if (!log_level_override.empty()) cfg.log_level = log_level_override;
 
-  ensure_parent_dir(cfg.storage.path);
+  if (test_config) {
+    std::cout << "config ok" << std::endl;
+    return 0;
+  }
 
-  std::unique_ptr<mail_client> mail(make_mail_client_imap(cfg.imap, &err));
-  if (!mail) {
-    std::cerr << "imap error: " << err << std::endl;
+  if (test_browser) {
+    browser_worker_client browser(cfg.browser_worker);
+    if (browser.health(err)) {
+      std::cout << "browser-worker ok" << std::endl;
+      return 0;
+    }
+    std::cerr << "browser-worker error: " << err << std::endl;
     return 1;
   }
+
+  if (test_llm) {
+    std::unique_ptr<llm_client> llm = cfg.llm.enabled ? make_ollama_client(cfg.llm) : make_noop_llm_client();
+    message msg;
+    msg.subject = "Important form";
+    msg.body_text = "Please fill this form";
+    auto analysis = llm->analyze_email(msg);
+    std::cout << "llm test kind=" << static_cast<int>(analysis.kind) << std::endl;
+    return 0;
+  }
+
+  if (test_telegram) {
+    telegram_bot bot(cfg.telegram);
+    if (!bot.enabled()) {
+      std::cerr << "telegram disabled or incomplete" << std::endl;
+      return 1;
+    }
+    if (bot.send_message("Catch the Letter: test message", err)) {
+      std::cout << "telegram ok" << std::endl;
+      return 0;
+    }
+    std::cerr << "telegram error: " << err << std::endl;
+    return 1;
+  }
+
+  ensure_parent_dir(cfg.storage.path);
 
   std::unique_ptr<telegram_notifier> tg;
   if (cfg.telegram.enabled && (cfg.telegram.bot_token.empty() || cfg.telegram.chat_id.empty())) {
@@ -207,7 +263,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  app application(cfg, std::move(mail), std::move(tg), std::move(store), std::move(twilio_ptr));
+  app application(cfg, std::unique_ptr<mail_client>{}, std::move(tg), std::move(store), std::move(twilio_ptr));
 
   std::unique_ptr<http_server> server;
   if (cfg.http.enabled) {
@@ -218,7 +274,7 @@ int main(int argc, char** argv) {
     handlers.set_rules_json = [&application](const std::string& text, std::string& e) {
       return application.update_rules_json(text, e);
     };
-    handlers.get_active_forms_json = [&application]() { return application.active_forms_json(); };
+    handlers.get_active_forms_json = [&application](bool all) { return application.active_forms_json(all); };
     handlers.get_form_json = [&application](const std::string& id) { return application.form_json(id); };
     handlers.update_form_field_json = [&application](const std::string& id, const std::string& body, std::string& e) {
       return application.update_form_field_json(id, body, e);
@@ -252,6 +308,9 @@ int main(int argc, char** argv) {
     handlers.test_browser_json = [&application]() { return application.test_browser_json(); };
     handlers.test_llm_json = [&application]() { return application.test_llm_json(); };
     handlers.test_telegram_json = [&application]() { return application.test_telegram_json(); };
+    handlers.create_demo_form = [&application](bool auth_demo, std::string& e) {
+      return application.create_demo_form(auth_demo, e);
+    };
     server = make_http_server(cfg.http, handlers, err);
     if (!server->start()) {
       std::cerr << "http server failed" << std::endl;

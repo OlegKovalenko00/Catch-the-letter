@@ -230,6 +230,9 @@ bool workflow_engine::start_form_workflow(const message& msg,
     return false;
   }
 
+  append_event("info", "form_detected", "Form link detected",
+               {{"url", sanitize_url_for_log(chosen->url)}, {"uid", msg.uid}});
+
   std::string reason;
   if (!is_allowed_url(chosen->url, cfg.security, reason)) {
     form_session session;
@@ -241,7 +244,7 @@ bool workflow_engine::start_form_workflow(const message& msg,
     session.title = msg.subject;
     store.create_form_session(session);
     notify_manual("Ссылка формы заблокирована политикой безопасности: " + reason + "\n\n" + chosen->url);
-    append_event("warning", "form_url_blocked", reason, {{"url", sanitize_url_for_log(chosen->url)}});
+    append_event("warning", "url_blocked", reason, {{"url", sanitize_url_for_log(chosen->url)}});
     status = "manual_required";
     return false;
   }
@@ -262,6 +265,9 @@ bool workflow_engine::start_form_workflow(const message& msg,
     status = "manual_required";
     return false;
   }
+
+  append_event("info", "form_inspected", "Form inspected",
+               {{"url", sanitize_url_for_log(chosen->url)}, {"form_type", snapshot->form_type}});
 
   form_session session;
   session.mailbox_id = msg.mailbox_id;
@@ -291,7 +297,7 @@ bool workflow_engine::start_form_workflow(const message& msg,
     } else {
       notify_manual(ss.str());
     }
-    append_event("info", "form_waiting_auth", "Form requires auth",
+    append_event("info", "waiting_auth", "Form requires auth",
                  {{"session_id", id}, {"url", sanitize_url_for_log(chosen->url)}});
     status = "form_waiting_auth";
     return true;
@@ -306,7 +312,7 @@ bool workflow_engine::start_form_workflow(const message& msg,
   if (saved) {
     send_form_review(*saved, err);
   }
-  append_event("info", "form_waiting_user_review", "Form session created", {{"session_id", id}});
+  append_event("info", "form_waiting_user", "Form session created", {{"session_id", id}});
   status = "form_waiting_user";
   return true;
 }
@@ -366,6 +372,49 @@ bool workflow_engine::send_submit_confirmation(const form_session& session, std:
   return true;
 }
 
+bool workflow_engine::create_demo_session(const std::string& url,
+                                          const std::string& title,
+                                          bool auth_demo,
+                                          std::string& err) {
+  auto snapshot = browser.inspect_form(url, err);
+  if (!snapshot.has_value()) {
+    append_event("error", "browser_worker_unavailable", err, {{"url", sanitize_url_for_log(url)}});
+    return false;
+  }
+
+  message msg;
+  msg.uid = std::string("demo-") + (auth_demo ? "auth-" : "form-") + std::to_string(std::time(nullptr));
+  msg.mailbox_id = "demo";
+  msg.provider = "demo";
+  msg.subject = title;
+  msg.body_text = "Demo form: " + url;
+  msg.links.push_back({url, "", 1.0});
+
+  form_session session;
+  session.mailbox_id = msg.mailbox_id;
+  session.message_uid = msg.uid;
+  session.form_url = snapshot->url.empty() ? url : snapshot->url;
+  session.form_type = snapshot->form_type;
+  session.title = snapshot->title.empty() ? title : snapshot->title;
+  session.browser_session_id = snapshot->session_id;
+
+  if (snapshot->auth_required) {
+    session.status = "waiting_auth";
+    session.auth_state_json = json({{"state", "required"}, {"url", snapshot->final_url}}).dump();
+    std::string id = store.create_form_session(session);
+    append_event("info", "waiting_auth", "Demo auth form created", {{"session_id", id}});
+    err.clear();
+    return true;
+  }
+
+  session.status = "waiting_user_review";
+  session.fields = llm.map_fields(msg, *snapshot, profile);
+  std::string id = store.create_form_session(session);
+  append_event("info", "form_waiting_user", "Demo form session created", {{"session_id", id}});
+  err.clear();
+  return true;
+}
+
 bool workflow_engine::fill_form_after_review(const std::string& session_id, std::string& err) {
   auto session = store.get_form_session(session_id);
   if (!session) {
@@ -378,9 +427,14 @@ bool workflow_engine::fill_form_after_review(const std::string& session_id, std:
     return false;
   }
   for (const auto& field : session->fields) {
-    if (field.required && (field.value.empty() || field.requires_user_input)) {
+    if (field.required && field.value.empty()) {
       err = "not all required fields are filled";
       notify_manual("Не все обязательные поля заполнены. Проверьте форму перед заполнением.");
+      return false;
+    }
+    if (field.requires_user_input && field.value.empty()) {
+      err = "field requires user input";
+      notify_manual("Некоторые поля требуют ручного ввода. Проверьте форму перед заполнением.");
       return false;
     }
   }
@@ -408,8 +462,22 @@ bool workflow_engine::submit_form_after_confirm(const std::string& session_id, s
     err = "submit confirmation is required";
     return false;
   }
-  if (!browser.submit_form(session->browser_session_id, err)) {
-    append_event("error", "form_submit_failed", err, {{"session_id", session_id}});
+  auto submit = browser.submit_form_result(session->browser_session_id, err);
+  if (submit.needs_next) {
+    form_snapshot next_snapshot;
+    next_snapshot.fields = submit.fields;
+    session->fields = llm.map_fields(message{}, next_snapshot, profile);
+    if (session->fields.empty()) session->fields = submit.fields;
+    session->status = "waiting_user_review";
+    store.update_form_session(*session);
+    send_form_review(*session, err);
+    append_event("info", "form_needs_next", "Multipage form has additional fields", {{"session_id", session_id}});
+    err.clear();
+    return true;
+  }
+  if (!submit.ok || !submit.submitted) {
+    store.update_form_session_status(session_id, "failed");
+    append_event("error", "form_submit_failed", err.empty() ? submit.error : err, {{"session_id", session_id}});
     return false;
   }
   store.update_form_session_status(session_id, "submitted");
@@ -505,6 +573,14 @@ bool workflow_engine::submit_auth_credentials(const std::string& session_id,
   }
   if (status == "waiting_2fa") {
     store.update_form_session_status(session_id, "waiting_2fa");
+    if (cfg.auth.two_factor_via_telegram && !cfg.telegram.chat_id.empty()) {
+      telegram_dialog dialog;
+      dialog.chat_id = cfg.telegram.chat_id;
+      dialog.session_id = session_id;
+      dialog.state = "waiting_2fa_code";
+      dialog.payload_json = json({{"kind", "2fa"}}).dump();
+      store.save_telegram_dialog(dialog);
+    }
     notify_manual("Нужен одноразовый код 2FA. Введите его в Web UI или отправьте в Telegram, если это включено.");
     append_event("info", "waiting_2fa", "Waiting for 2FA", {{"session_id", session_id}});
     err.clear();

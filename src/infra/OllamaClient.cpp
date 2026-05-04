@@ -3,6 +3,8 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -15,6 +17,51 @@ size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
   auto* out = static_cast<std::string*>(userdata);
   out->append(ptr, size * nmemb);
   return size * nmemb;
+}
+
+double clamp01(double value) {
+  if (value < 0.0) return 0.0;
+  if (value > 1.0) return 1.0;
+  return value;
+}
+
+bool message_has_link(const message& msg, const std::string& url, link& out) {
+  for (const auto& item : msg.links) {
+    if (item.url == url) {
+      out = item;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_sensitive_key(const std::string& key) {
+  std::string lower = key;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return lower.find("passport") != std::string::npos ||
+         lower.find("snils") != std::string::npos ||
+         lower.find("birth") != std::string::npos ||
+         lower.find("password") != std::string::npos ||
+         lower.find("token") != std::string::npos ||
+         lower.find("secret") != std::string::npos ||
+         lower.find("code") != std::string::npos ||
+         lower.find("cookie") != std::string::npos;
+}
+
+bool is_opinion_field(const form_field& field) {
+  std::string text = field.label + " " + field.id + " " + field.type;
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return text.find("opinion") != std::string::npos ||
+         text.find("comment") != std::string::npos ||
+         text.find("rating") != std::string::npos ||
+         text.find("feedback") != std::string::npos ||
+         text.find("оцен") != std::string::npos ||
+         text.find("комментар") != std::string::npos ||
+         text.find("выберите") != std::string::npos;
 }
 
 class ollama_client final : public llm_client {
@@ -36,7 +83,7 @@ public:
       else if (kind == "auth_required") out.kind = message_kind::auth_required;
       else if (kind == "ignored") out.kind = message_kind::ignored;
       else out.kind = message_kind::unknown;
-      out.confidence = parsed.value("confidence", out.confidence);
+      out.confidence = clamp01(parsed.value("confidence", out.confidence));
       out.summary = parsed.value("summary", out.summary);
       out.user_action_required = parsed.value("user_action_required", out.user_action_required);
       if (parsed.contains("form_links") && parsed["form_links"].is_array()) {
@@ -44,9 +91,10 @@ public:
         for (const auto& item : parsed["form_links"]) {
           link l;
           l.url = item.value("url", "");
-          l.domain = item.value("domain", "");
-          l.confidence = item.value("confidence", 0.0);
-          if (!l.url.empty()) out.form_links.push_back(l);
+          if (message_has_link(msg, l.url, l)) {
+            l.confidence = clamp01(item.value("confidence", l.confidence));
+            out.form_links.push_back(l);
+          }
         }
       }
       return out;
@@ -65,11 +113,10 @@ public:
 
     json profile_json;
     for (const auto& [key, value] : profile.values) {
-      if (cfg.privacy_mode == "safe" &&
-          (key.find("passport") != std::string::npos || key.find("snils") != std::string::npos ||
-           key.find("birth") != std::string::npos || key.find("password") != std::string::npos)) {
+      if (cfg.privacy_mode == "safe" && is_sensitive_key(key)) {
         continue;
       }
+      if (value.empty()) continue;
       profile_json[key] = value;
     }
 
@@ -97,9 +144,16 @@ public:
         for (auto& field : fallback_fields) {
           if (field.id != id) continue;
           field.mapped_profile_key = item.value("mapped_profile_key", field.mapped_profile_key);
-          field.value = item.value("suggested_value", field.value);
-          field.confidence = item.value("confidence", field.confidence);
+          if (cfg.privacy_mode == "safe" && is_sensitive_key(field.mapped_profile_key)) {
+            field.requires_user_input = true;
+            continue;
+          }
+          std::string suggested = item.value("suggested_value", field.value);
+          if (!suggested.empty()) field.value = suggested;
+          field.confidence = clamp01(item.value("confidence", field.confidence));
           field.requires_user_input = item.value("requires_user_input", field.requires_user_input);
+          if (field.confidence < 0.75) field.requires_user_input = true;
+          if (is_opinion_field(field) && field.value.empty()) field.requires_user_input = true;
         }
       }
       return fallback_fields;
@@ -138,6 +192,7 @@ private:
     json req = {
         {"model", cfg.model},
         {"stream", false},
+        {"format", "json"},
         {"messages", json::array({
             {{"role", "system"}, {"content", "Ты локальный помощник. Возвращай только JSON."}},
             {{"role", "user"}, {"content", prompt}}

@@ -9,6 +9,14 @@
 #include <string>
 #include <vector>
 
+struct browser_submit_result {
+  bool ok = false;
+  bool submitted = false;
+  bool needs_next = false;
+  std::vector<form_field> fields;
+  std::string error;
+};
+
 class browser_worker_client {
 public:
   explicit browser_worker_client(browser_worker_config cfg);
@@ -19,6 +27,8 @@ public:
                  const std::vector<form_field>& fields,
                  std::string& err) const;
   bool submit_form(const std::string& browser_session_id, std::string& err) const;
+  browser_submit_result submit_form_result(const std::string& browser_session_id,
+                                           std::string& err) const;
   bool close_session(const std::string& browser_session_id, std::string& err) const;
   std::string enter_credentials(const std::string& browser_session_id,
                                 const std::string& username,

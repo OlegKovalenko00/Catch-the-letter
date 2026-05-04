@@ -11,7 +11,7 @@ struct http_handlers {
   std::function<std::string(int)> get_events_json;
   std::function<std::string()> get_rules_json;
   std::function<bool(const std::string&, std::string&)> set_rules_json;
-  std::function<std::string()> get_active_forms_json;
+  std::function<std::string(bool)> get_active_forms_json;
   std::function<std::string(const std::string&)> get_form_json;
   std::function<bool(const std::string&, const std::string&, std::string&)> update_form_field_json;
   std::function<bool(const std::string&, std::string&)> fill_form;
@@ -27,6 +27,7 @@ struct http_handlers {
   std::function<std::string()> test_browser_json;
   std::function<std::string()> test_llm_json;
   std::function<std::string()> test_telegram_json;
+  std::function<bool(bool, std::string&)> create_demo_form;
 };
 
 class http_server {

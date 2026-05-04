@@ -124,7 +124,18 @@ bool telegram_dialog_manager::parse_field_line(const std::string& line,
 
 void telegram_dialog_manager::handle_text(const telegram_update& update) {
   auto dialog = store.get_telegram_dialog_by_chat(update.chat_id);
-  if (!dialog) return;
+  auto looks_like_secret = [](const std::string& text) {
+    if (text.size() < 6 || text.size() > 128) return false;
+    if (text.find(':') != std::string::npos) return false;
+    return std::none_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c); });
+  };
+  if (!dialog) {
+    if (looks_like_secret(update.text)) {
+      std::string err;
+      workflow.notify_text("Пароль нельзя отправлять через Telegram. Введите его в локальном Web UI: http://127.0.0.1:8080", err);
+    }
+    return;
+  }
 
   if (dialog->state == "waiting_2fa_code") {
     std::string err;
@@ -136,7 +147,13 @@ void telegram_dialog_manager::handle_text(const telegram_update& update) {
     return;
   }
 
-  if (dialog->state != "waiting_field_values") return;
+  if (dialog->state != "waiting_field_values") {
+    if (looks_like_secret(update.text)) {
+      std::string err;
+      workflow.notify_text("Пароль нельзя отправлять через Telegram. Введите его в локальном Web UI: http://127.0.0.1:8080", err);
+    }
+    return;
+  }
 
   std::istringstream input(update.text);
   std::string line;

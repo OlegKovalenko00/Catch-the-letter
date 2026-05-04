@@ -56,6 +56,10 @@ public:
   bool test_llm(std::string& err);
   bool test_telegram(std::string& err);
   void set_profile(user_profile next_profile);
+  bool create_demo_session(const std::string& url,
+                           const std::string& title,
+                           bool auth_demo,
+                           std::string& err);
 
 private:
   void append_event(std::string level,

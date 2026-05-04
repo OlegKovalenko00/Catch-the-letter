@@ -112,7 +112,7 @@
     },
     {
       "id": "important_notifications",
-      "name": "Important notifications",
+      "name": "Generic important notifications",
       "enabled": true,
       "priority": 50,
       "match": {
@@ -135,6 +135,84 @@
           "type": "notify",
           "channel": "console",
           "text": "Важно: {{from}} / {{subject}}"
+        }
+      ]
+    },
+    {
+      "id": "education_forms",
+      "name": "Education forms",
+      "enabled": true,
+      "priority": 80,
+      "match": {
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "links.domain",
+            "op": "domain_in",
+            "value": [
+              "forms.yandex.ru",
+              "docs.google.com",
+              "forms.gle",
+              "forms.office.com",
+              "forms.microsoft.com"
+            ]
+          },
+          {
+            "field": "body_text",
+            "op": "regex_i",
+            "value": "(анкета|опрос|survey|questionnaire|registration form)"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "classify"
+        },
+        {
+          "type": "detect_form"
+        },
+        {
+          "type": "notify",
+          "channel": "telegram",
+          "text": "Найдена форма: {{subject}}"
+        }
+      ]
+    },
+    {
+      "id": "auth_required_forms",
+      "name": "Auth required LMS-like forms",
+      "enabled": true,
+      "priority": 90,
+      "match": {
+        "mode": "any",
+        "conditions": [
+          {
+            "field": "links.domain",
+            "op": "domain_in",
+            "value": [
+              "lms.hse.ru",
+              "smartlms.hse.ru",
+              "id.hse.ru"
+            ]
+          },
+          {
+            "field": "body_text",
+            "op": "regex_i",
+            "value": "(lms|smartlms|course evaluation|оценивание|авторизац|войдите)"
+          }
+        ]
+      },
+      "actions": [
+        {
+          "type": "classify"
+        },
+        {
+          "type": "detect_form"
+        },
+        {
+          "type": "notify",
+          "channel": "telegram",
+          "text": "Найдена форма с возможной авторизацией: {{subject}}"
         }
       ]
     }

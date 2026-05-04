@@ -44,14 +44,16 @@ const std::vector<alias_rule>& aliases() {
   static const std::vector<alias_rule> value = {
       {"full_name", {"фио", "фамилия имя отчество", "full name", "name"}},
       {"hse_email", {"корпоративная почта", "hse email", "edu.hse.ru", "email", "e-mail", "почта"}},
+      {"personal_email", {"личная почта", "personal email"}},
       {"phone", {"телефон", "phone", "mobile", "мобильный"}},
-      {"student_group", {"группа", "учебная группа", "student group"}},
+      {"student_group", {"группа", "учебная группа", "student group", "номер группы"}},
       {"faculty", {"факультет", "faculty"}},
-      {"programme", {"образовательная программа", "programme", "program", "программа"}},
+      {"programme", {"образовательная программа", "programme", "program", "программа", "направление"}},
       {"last_name", {"фамилия", "last name", "surname"}},
       {"first_name", {"имя", "first name"}},
       {"middle_name", {"отчество", "middle name"}},
-      {"campus", {"кампус", "campus"}},
+      {"course_year", {"курс", "course year", "year"}},
+      {"campus", {"кампус", "campus", "город обучения"}},
       {"education_level", {"уровень образования", "education level"}}
   };
   return value;
@@ -70,7 +72,7 @@ public:
 
     std::string haystack = msg.subject + "\n" + msg.snippet + "\n" + msg.body_text + "\n" + msg.body;
     if (!result.form_links.empty() ||
-        contains_any(haystack, {"опрос", "анкета", "форма", "регистрация", "заполните", "survey", "form"})) {
+        contains_any(haystack, {"опрос", "анкета", "форма", "регистрация", "заполните", "survey", "form", "questionnaire"})) {
       result.kind = message_kind::form_request;
       result.confidence = result.form_links.empty() ? 0.72 : 0.9;
       result.user_action_required = true;
@@ -83,7 +85,7 @@ public:
       return result;
     }
 
-    if (contains_any(haystack, {"важно", "срочно", "дедлайн", "deadline", "important"})) {
+    if (contains_any(haystack, {"важно", "срочно", "дедлайн", "deadline", "important", "exam", "lms", "smartlms"})) {
       result.kind = message_kind::important_notification;
       result.confidence = 0.8;
       result.user_action_required = true;
@@ -103,7 +105,7 @@ public:
       field.requires_user_input = field.required;
 
       std::string label = to_lower(field.label + " " + field.id + " " + field.selector);
-      if (field_is_user_input(label)) {
+      if (field_is_user_input(label) || contains_any(label, {"согласие", "персональн", "personal data consent"})) {
         field.requires_user_input = true;
         continue;
       }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -56,6 +57,12 @@ static std::uint64_t parse_uid_or_zero(const std::string& uid) {
   }
 }
 
+static std::string lower_ascii(std::string text) {
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return text;
+}
+
 static nlohmann::json form_field_to_json(const form_field& field) {
   return {
       {"id", field.id},
@@ -96,13 +103,50 @@ app::app(app_config cfg,
          std::unique_ptr<storage> storage_ptr,
          std::unique_ptr<twilio_notifier> twilio_ptr)
   : cfg(std::move(cfg)),
-    mail_client_ptr(std::move(mail_client_ptr)),
     telegram_notifier_ptr(std::move(telegram_notifier_ptr)),
     storage_ptr(std::move(storage_ptr)),
     twilio_ptr(std::move(twilio_ptr)) {
   std::string err;
   if (!load_user_profile(this->cfg.profile_file, profile, err)) {
     profile.values.clear();
+  }
+
+  if (mail_client_ptr) {
+    mailbox_runtime runtime;
+    runtime.cfg = this->cfg.imap;
+    runtime.client = std::move(mail_client_ptr);
+    mailboxes.push_back(std::move(runtime));
+  } else {
+    auto mailbox_configs = this->cfg.mailboxes.empty()
+        ? std::vector<imap_config>{this->cfg.imap}
+        : this->cfg.mailboxes;
+    for (const auto& mailbox_cfg : mailbox_configs) {
+      mailbox_runtime runtime;
+      runtime.cfg = mailbox_cfg;
+      if (runtime.cfg.mailbox_id.empty()) runtime.cfg.mailbox_id = "main";
+
+      if (lower_ascii(runtime.cfg.auth_method) == "xoauth2") {
+        runtime.last_error = "Gmail XOAUTH2 is not implemented yet";
+      } else if (runtime.cfg.host.empty()) {
+        runtime.last_error = "imap host is not configured";
+      } else if (runtime.cfg.username.empty() || runtime.cfg.password.empty()) {
+        runtime.last_error = "imap username/password are not configured";
+      } else {
+        std::string mail_err;
+        runtime.client.reset(make_mail_client_imap(runtime.cfg, &mail_err));
+        if (!runtime.client) runtime.last_error = mail_err.empty() ? "imap client unavailable" : mail_err;
+      }
+
+      if (!runtime.last_error.empty()) {
+        append_event(
+            "warn",
+            "mailbox_unavailable",
+            "Mailbox is not available",
+            {{"mailbox_id", runtime.cfg.mailbox_id}, {"provider", runtime.cfg.provider}, {"error", runtime.last_error}}
+        );
+      }
+      mailboxes.push_back(std::move(runtime));
+    }
   }
 
   telegram_bot_ptr = std::make_unique<telegram_bot>(this->cfg.telegram);
@@ -154,11 +198,12 @@ void app::append_event(std::string level,
   storage_ptr->append_event(event, cfg.events_limit);
 }
 
-mailbox_checkpoint app::ensure_checkpoint() {
-  std::string mailbox_id = cfg.imap.mailbox_id.empty() ? "main" : cfg.imap.mailbox_id;
+mailbox_checkpoint app::ensure_checkpoint(mailbox_runtime& mailbox) {
+  std::string mailbox_id = mailbox.cfg.mailbox_id.empty() ? "main" : mailbox.cfg.mailbox_id;
   auto existing = storage_ptr->load_checkpoint(mailbox_id);
   if (existing.has_value()) {
     std::lock_guard<std::mutex> lock(mu);
+    mailbox.last_seen_uid = existing->last_seen_uid;
     status.mailbox_id = existing->mailbox_id;
     status.last_seen_uid = existing->last_seen_uid;
     return existing.value();
@@ -166,13 +211,14 @@ mailbox_checkpoint app::ensure_checkpoint() {
 
   mailbox_checkpoint checkpoint;
   checkpoint.mailbox_id = mailbox_id;
-  checkpoint.last_seen_uid = mail_client_ptr ? mail_client_ptr->fetch_max_uid() : 0;
+  checkpoint.last_seen_uid = mailbox.client ? mailbox.client->fetch_max_uid() : 0;
   checkpoint.started_at = now_iso();
   checkpoint.updated_at = checkpoint.started_at;
   storage_ptr->save_checkpoint(checkpoint);
 
   {
     std::lock_guard<std::mutex> lock(mu);
+    mailbox.last_seen_uid = checkpoint.last_seen_uid;
     status.mailbox_id = checkpoint.mailbox_id;
     status.last_seen_uid = checkpoint.last_seen_uid;
   }
@@ -248,12 +294,10 @@ bool app::send_action(const message& msg, const action& a, std::string& err) {
 }
 
 void app::run(bool once) {
-  if (!mail_client_ptr || !storage_ptr) {
+  if (!storage_ptr) {
     std::cerr << "app not configured" << std::endl;
     return;
   }
-
-  mailbox_checkpoint checkpoint = ensure_checkpoint();
 
   while (true) {
     load_rules_if_changed();
@@ -264,41 +308,60 @@ void app::run(bool once) {
       status.last_check = now_iso();
     }
 
-    int matched = 0;
-    std::uint64_t max_seen = checkpoint.last_seen_uid;
-    auto msgs = mail_client_ptr->fetch_after_uid(checkpoint.last_seen_uid);
-    for (auto msg : msgs) {
-      if (msg.mailbox_id.empty() || msg.mailbox_id == "default") {
-        msg.mailbox_id = checkpoint.mailbox_id;
+    int matched_total = 0;
+    for (auto& mailbox : mailboxes) {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        mailbox.last_check = status.last_check;
       }
 
-      std::uint64_t numeric_uid = parse_uid_or_zero(msg.uid);
-      if (numeric_uid > max_seen) max_seen = numeric_uid;
+      if (!mailbox.client) continue;
 
-      if (storage_ptr->is_processed(msg.mailbox_id, msg.uid)) continue;
+      mailbox_checkpoint checkpoint = ensure_checkpoint(mailbox);
+      int matched = 0;
+      std::uint64_t max_seen = checkpoint.last_seen_uid;
+      auto msgs = mailbox.client->fetch_after_uid(checkpoint.last_seen_uid);
+      for (auto msg : msgs) {
+        if (msg.mailbox_id.empty() || msg.mailbox_id == "default") {
+          msg.mailbox_id = checkpoint.mailbox_id;
+        }
+        if (msg.provider.empty()) msg.provider = mailbox.cfg.provider;
 
-      auto result = workflow_ptr->handle_message(msg, rules_copy);
-      if (result.matched) matched++;
-    }
+        std::uint64_t numeric_uid = parse_uid_or_zero(msg.uid);
+        if (numeric_uid > max_seen) max_seen = numeric_uid;
 
-    if (max_seen > checkpoint.last_seen_uid) {
-      checkpoint.last_seen_uid = max_seen;
-      checkpoint.updated_at = now_iso();
-      storage_ptr->save_checkpoint(checkpoint);
-      append_event(
-          "info",
-          "checkpoint_updated",
-          "Mailbox checkpoint updated",
-          {{"mailbox_id", checkpoint.mailbox_id}, {"last_seen_uid", checkpoint.last_seen_uid}}
-      );
+        if (storage_ptr->is_processed(msg.mailbox_id, msg.uid)) continue;
+
+        auto result = workflow_ptr->handle_message(msg, rules_copy);
+        if (result.matched) matched++;
+      }
+
+      if (max_seen > checkpoint.last_seen_uid) {
+        checkpoint.last_seen_uid = max_seen;
+        checkpoint.updated_at = now_iso();
+        storage_ptr->save_checkpoint(checkpoint);
+        append_event(
+            "info",
+            "checkpoint_updated",
+            "Mailbox checkpoint updated",
+            {{"mailbox_id", checkpoint.mailbox_id}, {"last_seen_uid", checkpoint.last_seen_uid}}
+        );
+      }
+
+      matched_total += matched;
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        mailbox.matched_last = matched;
+        mailbox.last_seen_uid = checkpoint.last_seen_uid;
+        status.mailbox_id = checkpoint.mailbox_id;
+        status.last_seen_uid = checkpoint.last_seen_uid;
+      }
     }
 
     {
       std::lock_guard<std::mutex> lock(mu);
       status.processed_total = storage_ptr->processed_count();
-      status.matched_last = matched;
-      status.mailbox_id = checkpoint.mailbox_id;
-      status.last_seen_uid = checkpoint.last_seen_uid;
+      status.matched_last = matched_total;
     }
 
     if (once) break;
@@ -317,6 +380,25 @@ std::string app::status_json() const {
   j["matched_last"] = status.matched_last;
   j["events_limit"] = cfg.events_limit;
   j["log_level"] = cfg.log_level;
+  j["telegram"] = {{"enabled", cfg.telegram.enabled}, {"poll_updates", cfg.telegram.poll_updates}};
+  j["browser_worker"] = {{"enabled", cfg.browser_worker.enabled}, {"endpoint", cfg.browser_worker.endpoint}};
+  j["llm"] = {{"enabled", cfg.llm.enabled}, {"provider", cfg.llm.provider}, {"model", cfg.llm.model}};
+  j["web"] = {{"enabled", cfg.http.enabled}, {"host", cfg.http.host}, {"port", cfg.http.port}};
+  j["mailboxes_status"] = nlohmann::json::array();
+  for (const auto& mailbox : mailboxes) {
+    j["mailboxes_status"].push_back({
+        {"id", mailbox.cfg.mailbox_id},
+        {"provider", mailbox.cfg.provider},
+        {"email", mailbox.cfg.email},
+        {"auth_method", mailbox.cfg.auth_method},
+        {"folder", mailbox.cfg.folder},
+        {"enabled", mailbox.client != nullptr},
+        {"last_check", mailbox.last_check},
+        {"last_error", mailbox.last_error},
+        {"last_seen_uid", mailbox.last_seen_uid},
+        {"matched_last", mailbox.matched_last}
+    });
+  }
   return j.dump(2);
 }
 
@@ -367,8 +449,8 @@ bool app::update_rules_json(const std::string& text, std::string& err) {
   return true;
 }
 
-std::string app::active_forms_json() const {
-  auto sessions = storage_ptr->list_active_form_sessions();
+std::string app::active_forms_json(bool all) const {
+  auto sessions = storage_ptr->list_active_form_sessions(all);
   nlohmann::json out = nlohmann::json::array();
   for (const auto& session : sessions) out.push_back(form_session_to_json(session));
   return out.dump(2);
@@ -478,8 +560,30 @@ bool app::update_profile_json(const std::string& body, std::string& err) {
 std::string app::config_json() const {
   nlohmann::json out;
   out["app"] = {{"events_limit", cfg.events_limit}, {"log_level", cfg.log_level}};
+  out["mailboxes"] = nlohmann::json::array();
+  auto mailbox_configs = cfg.mailboxes.empty() ? std::vector<imap_config>{cfg.imap} : cfg.mailboxes;
+  for (const auto& mailbox : mailbox_configs) {
+    out["mailboxes"].push_back({
+        {"id", mailbox.mailbox_id},
+        {"provider", mailbox.provider},
+        {"email", mailbox.email},
+        {"auth_method", mailbox.auth_method},
+        {"host", mailbox.host},
+        {"port", mailbox.port},
+        {"tls", mailbox.tls},
+        {"folder", mailbox.folder},
+        {"checkpoint_mode", mailbox.checkpoint_mode},
+        {"poll_interval_sec", mailbox.poll_interval_sec},
+        {"mark_seen", mailbox.mark_seen},
+        {"username_configured", !mailbox.username.empty()},
+        {"password_configured", !mailbox.password.empty()}
+    });
+  }
   out["imap"] = {
       {"mailbox_id", cfg.imap.mailbox_id},
+      {"provider", cfg.imap.provider},
+      {"email", cfg.imap.email},
+      {"auth_method", cfg.imap.auth_method},
       {"host", cfg.imap.host},
       {"port", cfg.imap.port},
       {"tls", cfg.imap.tls},
@@ -514,6 +618,15 @@ std::string app::config_json() const {
       {"allowed_domains", cfg.security.allowed_domains},
       {"blocked_domains", cfg.security.blocked_domains}
   };
+  out["auth"] = {
+      {"enabled", cfg.auth.enabled},
+      {"allow_credentials_via_telegram", cfg.auth.allow_credentials_via_telegram},
+      {"allow_credentials_via_web", cfg.auth.allow_credentials_via_web},
+      {"remember_credentials", cfg.auth.remember_credentials},
+      {"credentials_storage", cfg.auth.credentials_storage},
+      {"two_factor_via_telegram", cfg.auth.two_factor_via_telegram},
+      {"two_factor_via_web", cfg.auth.two_factor_via_web}
+  };
   out["profile_file"] = cfg.profile_file;
   out["rules_file"] = cfg.rules_file;
   return out.dump(2);
@@ -535,4 +648,10 @@ std::string app::test_telegram_json() {
   std::string err;
   bool ok = workflow_ptr->test_telegram(err);
   return nlohmann::json({{"ok", ok}, {"error", err}}).dump(2);
+}
+
+bool app::create_demo_form(bool auth_demo, std::string& err) {
+  std::string url = cfg.browser_worker.endpoint + (auth_demo ? "/demo-auth-form" : "/demo-form");
+  std::string title = auth_demo ? "Demo auth form" : "Demo form";
+  return workflow_ptr->create_demo_session(url, title, auth_demo, err);
 }

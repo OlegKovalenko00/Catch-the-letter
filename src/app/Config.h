@@ -7,12 +7,16 @@
 
 struct imap_config {
   std::string mailbox_id = "main";
+  std::string provider = "generic";
+  std::string email;
+  std::string auth_method = "password";
   std::string host;
   int port = 993;
   bool tls = true;
   std::string username;
   std::string password;
   std::string folder = "INBOX";
+  std::string checkpoint_mode = "uid";
   int poll_interval_sec = 20;
   bool mark_seen = false;
 };
@@ -38,6 +42,7 @@ struct http_config {
   bool enabled = true;
   std::string host = "127.0.0.1";
   int port = 8080;
+  std::string auth_token;
 };
 
 struct storage_config {
@@ -81,6 +86,7 @@ struct auth_config {
 
 struct app_config {
   imap_config imap;
+  std::vector<imap_config> mailboxes;
   telegram_config telegram;
   twilio_config twilio;
   http_config http;
@@ -95,6 +101,8 @@ struct app_config {
   int backoff_base_ms = 500;
   int backoff_max_ms = 8000;
   int events_limit = 200;
+  std::string timezone = "Europe/Moscow";
+  bool demo_mode = false;
   std::string log_level = "info";
 };
 

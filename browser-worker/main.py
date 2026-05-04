@@ -117,6 +117,17 @@ async def detect_auth_required(page: Page) -> bool:
         body = (await page.locator("body").inner_text(timeout=3000)).lower()
     except Exception:
         body = ""
+    try:
+        if await page.locator('input[type="password"]:visible').count():
+            return True
+    except Exception:
+        pass
+    try:
+        visible_form_fields = await page.locator('input:not([type="hidden"]):visible, textarea:visible, select:visible').count()
+    except Exception:
+        visible_form_fields = 0
+    if visible_form_fields > 1:
+        return False
     markers = [
         "login",
         "sign in",
@@ -160,6 +171,33 @@ FIELD_SCRIPT = r"""
     }
     return parts.join(' > ');
   }
+  function compact(text) {
+    return (text || '').replace(/\s+/g, ' ').trim();
+  }
+  function nearestQuestion(node) {
+    return node.closest('fieldset, [role="radiogroup"], [role="group"], [role="listitem"], .freebirdFormviewerComponentsQuestionBaseRoot, form, div') || node.parentElement || node;
+  }
+  function containerLabel(container, node) {
+    const legend = container.querySelector('legend');
+    if (legend) return compact(legend.innerText);
+    const aria = container.getAttribute('aria-label');
+    if (aria) return aria;
+    const text = compact(container.innerText);
+    const option = optionLabel(node);
+    if (option && text.endsWith(option)) return compact(text.slice(0, text.length - option.length));
+    return text.slice(0, 300);
+  }
+  function optionLabel(node) {
+    if (node.labels && node.labels.length) {
+      return compact(Array.from(node.labels).map(x => x.innerText).join(' '));
+    }
+    const aria = node.getAttribute('aria-label');
+    if (aria) return aria;
+    const parentLabel = node.closest('label');
+    if (parentLabel) return compact(parentLabel.innerText);
+    const parent = node.parentElement;
+    return parent ? compact(parent.innerText) : (node.value || '');
+  }
   function labelFor(node) {
     if (node.labels && node.labels.length) {
       return Array.from(node.labels).map(x => x.innerText.trim()).filter(Boolean).join(' ');
@@ -187,12 +225,44 @@ FIELD_SCRIPT = r"""
     if (tag === 'input') return type || 'text';
     return 'unknown';
   }
+  function isVisible(node) {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    return true;
+  }
   const nodes = Array.from(document.querySelectorAll(
     'input:not([type="hidden"]), textarea, select, [role="textbox"], [role="radio"], [role="checkbox"]'
   ));
   const seen = new Set();
   const result = [];
+  const groups = new Map();
   for (const node of nodes) {
+    if (!isVisible(node)) continue;
+    const rawType = (node.getAttribute('type') || '').toLowerCase();
+    const role = (node.getAttribute('role') || '').toLowerCase();
+    if (rawType === 'radio' || rawType === 'checkbox' || role === 'radio' || role === 'checkbox') {
+      const container = nearestQuestion(node);
+      const name = node.getAttribute('name') || node.getAttribute('aria-name') || '';
+      const groupKey = `${rawType || role}:${name || cssPath(container)}`;
+      const groupType = (rawType === 'radio' || role === 'radio') ? 'radio_group' : 'checkbox_group';
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          id: name || groupKey,
+          selector: cssPath(container),
+          label: containerLabel(container, node),
+          type: groupType,
+          required: false,
+          options: []
+        });
+      }
+      const group = groups.get(groupKey);
+      group.required = group.required || Boolean(node.required || node.getAttribute('aria-required') === 'true');
+      const label = optionLabel(node) || node.value || node.id || cssPath(node);
+      if (label && !group.options.includes(label)) group.options.push(label);
+      continue;
+    }
     const selector = cssPath(node);
     if (!selector || seen.has(selector)) continue;
     seen.add(selector);
@@ -208,6 +278,12 @@ FIELD_SCRIPT = r"""
       required: Boolean(node.required || node.getAttribute('aria-required') === 'true'),
       options
     });
+  }
+  for (const group of groups.values()) {
+    if (group.options.length === 1 && group.type === 'checkbox_group') {
+      group.type = 'checkbox';
+    }
+    result.push(group);
   }
   return result;
 }
@@ -233,6 +309,11 @@ async def demo_form() -> Any:
     <label><input type="radio" name="rating" value="5">5</label>
     <label><input type="radio" name="rating" value="4">4</label>
     <label><input type="radio" name="rating" value="3">3</label>
+  </fieldset>
+  <fieldset><legend>Интересы</legend>
+    <label><input type="checkbox" name="interests" value="events">Мероприятия</label>
+    <label><input type="checkbox" name="interests" value="career">Карьера</label>
+    <label><input type="checkbox" name="interests" value="research">Исследования</label>
   </fieldset>
   <label>Комментарий <textarea name="comment"></textarea></label><br>
   <button type="submit">Отправить</button>
@@ -260,6 +341,15 @@ async def demo_auth_form() -> Any:
   <label>ФИО <input name="full_name" required></label><br>
   <label>Email <input type="email" name="email" required></label><br>
   <label>Группа <input name="student_group"></label><br>
+  <fieldset><legend>Оценка</legend>
+    <label><input type="radio" name="rating" value="5">5</label>
+    <label><input type="radio" name="rating" value="4">4</label>
+    <label><input type="radio" name="rating" value="3">3</label>
+  </fieldset>
+  <fieldset><legend>Интересы</legend>
+    <label><input type="checkbox" name="interests" value="events">Мероприятия</label>
+    <label><input type="checkbox" name="interests" value="career">Карьера</label>
+  </fieldset>
   <button type="submit">Отправить</button>
 </form>
 <script>
@@ -337,12 +427,66 @@ async def fill_one(page: Page, field: FillField) -> None:
         role = ((await loc.get_attribute("role")) or "").lower()
     except Exception:
         role = ""
+    radio_count = await loc.locator('input[type="radio"], [role="radio"]').count()
+    checkbox_count = await loc.locator('input[type="checkbox"], [role="checkbox"]').count()
+    if radio_count:
+        target = value.strip().lower()
+        for i in range(radio_count):
+            opt = loc.locator('input[type="radio"], [role="radio"]').nth(i)
+            label = ""
+            try:
+                label = await opt.evaluate(r"""el => {
+                  const c = x => (x || '').replace(/\s+/g, ' ').trim();
+                  if (el.labels && el.labels.length) return c(Array.from(el.labels).map(x => x.innerText).join(' '));
+                  const aria = el.getAttribute('aria-label');
+                  if (aria) return aria;
+                  const parent = el.closest('label') || el.parentElement;
+                  return parent ? c(parent.innerText) : (el.value || '');
+                }""")
+            except Exception:
+                label = ""
+            raw = ((await opt.get_attribute("value")) or "").strip().lower()
+            if label.strip().lower() == target or raw == target or target in label.strip().lower():
+                await opt.check(force=True)
+                return
+        raise RuntimeError("radio option not found")
+    if checkbox_count and tag != "input":
+        values = [x.strip().lower() for x in re.split(r"[,;]", value) if x.strip()]
+        if value.strip().startswith("[") and value.strip().endswith("]"):
+            values = [x.strip().strip('"\'').lower() for x in value.strip()[1:-1].split(",") if x.strip()]
+        for i in range(checkbox_count):
+            opt = loc.locator('input[type="checkbox"], [role="checkbox"]').nth(i)
+            label = ""
+            try:
+                label = await opt.evaluate(r"""el => {
+                  const c = x => (x || '').replace(/\s+/g, ' ').trim();
+                  if (el.labels && el.labels.length) return c(Array.from(el.labels).map(x => x.innerText).join(' '));
+                  const aria = el.getAttribute('aria-label');
+                  if (aria) return aria;
+                  const parent = el.closest('label') || el.parentElement;
+                  return parent ? c(parent.innerText) : (el.value || '');
+                }""")
+            except Exception:
+                label = ""
+            raw = ((await opt.get_attribute("value")) or "").strip().lower()
+            hay = label.strip().lower()
+            if any(v == raw or v == hay or v in hay for v in values):
+                await opt.check(force=True)
+        return
     if tag == "select":
         try:
             await loc.select_option(label=value)
         except Exception:
-            await loc.select_option(value=value)
+            try:
+                await loc.select_option(value=value)
+            except Exception:
+                if value.isdigit():
+                    await loc.select_option(index=int(value))
+                else:
+                    raise
         return
+    if typ == "file":
+        raise RuntimeError("file upload requires manual handling")
     if typ in {"checkbox"} or role == "checkbox":
         if value.lower() in {"1", "true", "yes", "да", "on"}:
             await loc.check(force=True)
@@ -445,22 +589,24 @@ async def auth_credentials(req: AuthCredentials) -> dict[str, Any]:
     page: Page = session["page"]
     try:
         username_selectors = [
-            'input[type="email"]',
-            'input[autocomplete="username"]',
-            'input[autocomplete="email"]',
-            'input[name*="email" i]',
-            'input[name*="login" i]',
-            'input[name*="user" i]',
-            'input[id*="email" i]',
-            'input[id*="login" i]',
-            'input[id*="user" i]',
+            'input[type="email"]:visible',
+            'input[autocomplete="username"]:visible',
+            'input[autocomplete="email"]:visible',
+            'input[name*="email" i]:visible',
+            'input[name*="login" i]:visible',
+            'input[name*="user" i]:visible',
+            'input[id*="email" i]:visible',
+            'input[id*="login" i]:visible',
+            'input[id*="user" i]:visible',
         ]
-        password_selectors = ['input[type="password"]', 'input[autocomplete="current-password"]']
+        password_selectors = ['input[type="password"]:visible', 'input[autocomplete="current-password"]:visible']
         button_selectors = [
-            'button:has-text("Войти")', 'button:has-text("Sign in")', 'button:has-text("Login")',
-            'button:has-text("Log in")', 'button:has-text("Continue")', 'button:has-text("Продолжить")',
-            'button:has-text("Далее")', 'button:has-text("Submit")', 'button:has-text("Подтвердить")',
-            '[role="button"]:has-text("Войти")', '[role="button"]:has-text("Sign in")'
+            'button:visible:has-text("Войти")', 'button:visible:has-text("Sign in")',
+            'button:visible:has-text("Login")', 'button:visible:has-text("Log in")',
+            'button:visible:has-text("Continue")', 'button:visible:has-text("Продолжить")',
+            'button:visible:has-text("Далее")', 'button:visible:has-text("Submit")',
+            'button:visible:has-text("Подтвердить")',
+            '[role="button"]:visible:has-text("Войти")', '[role="button"]:visible:has-text("Sign in")'
         ]
         user_filled = False
         for selector in username_selectors:
@@ -505,10 +651,10 @@ async def auth_2fa(req: TwoFactorCode) -> dict[str, Any]:
     page: Page = session["page"]
     try:
         selectors = [
-            'input[autocomplete="one-time-code"]',
-            'input[name*="code" i]', 'input[id*="code" i]',
-            'input[name*="otp" i]', 'input[id*="otp" i]',
-            'input[type="tel"]', 'input[inputmode="numeric"]',
+            'input[autocomplete="one-time-code"]:visible',
+            'input[name*="code" i]:visible', 'input[id*="code" i]:visible',
+            'input[name*="otp" i]:visible', 'input[id*="otp" i]:visible',
+            'input[type="tel"]:visible', 'input[inputmode="numeric"]:visible',
         ]
         filled = False
         for selector in selectors:
@@ -519,7 +665,7 @@ async def auth_2fa(req: TwoFactorCode) -> dict[str, Any]:
                 break
         if not filled:
             return {"ok": False, "status": "failed", "error": "2FA field not found"}
-        for selector in ['button:has-text("Подтвердить")', 'button:has-text("Continue")', 'button:has-text("Submit")', 'button:has-text("Далее")', '[role="button"]:has-text("Подтвердить")']:
+        for selector in ['button:visible:has-text("Подтвердить")', 'button:visible:has-text("Continue")', 'button:visible:has-text("Submit")', 'button:visible:has-text("Далее")', '[role="button"]:visible:has-text("Подтвердить")']:
             loc = page.locator(selector).first
             if await loc.count():
                 await loc.click(timeout=5000)
@@ -545,7 +691,7 @@ async def detect_2fa_required(page: Page) -> bool:
     markers = ["2fa", "verification", "one-time", "otp", "код", "подтвержд", "sms"]
     if any(marker in text for marker in markers):
         return True
-    for selector in ['input[autocomplete="one-time-code"]', 'input[name*="code" i]', 'input[id*="otp" i]']:
+    for selector in ['input[autocomplete="one-time-code"]:visible', 'input[name*="code" i]:visible', 'input[id*="otp" i]:visible']:
         try:
             if await page.locator(selector).count():
                 return True

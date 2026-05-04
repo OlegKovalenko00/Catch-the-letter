@@ -14,6 +14,8 @@ public:
 
     message a;
     a.uid = "1";
+    a.mailbox_id = "demo";
+    a.provider = "demo";
     a.message_id = "<m1@demo>";
     a.from = "dean@university.edu";
     a.to = "student@example.com";
@@ -27,6 +29,8 @@ public:
 
     message b;
     b.uid = "2";
+    b.mailbox_id = "demo";
+    b.provider = "demo";
     b.message_id = "<m2@demo>";
     b.from = "news@somewhere.com";
     b.to = "student@example.com";

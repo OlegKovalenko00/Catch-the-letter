@@ -453,15 +453,19 @@ public:
     return session;
   }
 
-  std::vector<form_session> list_active_form_sessions() override {
+  std::vector<form_session> list_active_form_sessions(bool all = false) override {
     std::lock_guard<std::mutex> lock(mu);
     std::vector<form_session> result;
     if (!db) return result;
-    const char* sql =
+    const char* sql = all ?
       "SELECT id, mailbox_id, message_uid, status, form_url, form_type, title, fields_json, "
       "auth_state_json, browser_session_id, created_at, updated_at "
       "FROM active_form_session "
-      "WHERE status NOT IN ('submitted', 'manual_required', 'failed') "
+      "ORDER BY updated_at DESC;" :
+      "SELECT id, mailbox_id, message_uid, status, form_url, form_type, title, fields_json, "
+      "auth_state_json, browser_session_id, created_at, updated_at "
+      "FROM active_form_session "
+      "WHERE status IN ('waiting_user_review', 'waiting_auth', 'waiting_2fa', 'waiting_submit_confirm', 'failed') "
       "ORDER BY updated_at DESC;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
@@ -510,6 +514,15 @@ public:
 
     std::lock_guard<std::mutex> lock(mu);
     if (!db) return;
+    const char* clear_sql = "DELETE FROM telegram_dialog WHERE chat_id = ? AND id <> ?;";
+    sqlite3_stmt* clear_stmt = nullptr;
+    if (sqlite3_prepare_v2(db, clear_sql, -1, &clear_stmt, nullptr) == SQLITE_OK) {
+      sqlite3_bind_text(clear_stmt, 1, dialog.chat_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(clear_stmt, 2, dialog.id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_step(clear_stmt);
+    }
+    sqlite3_finalize(clear_stmt);
+
     const char* sql =
       "INSERT INTO telegram_dialog (id, chat_id, session_id, state, payload_json, created_at, updated_at) "
       "VALUES (?, ?, ?, ?, ?, ?, ?) "
