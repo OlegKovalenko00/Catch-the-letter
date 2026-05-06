@@ -40,6 +40,30 @@
     "endpoint": "http://browser-worker:8090",
     "timeout_seconds": 60
   },
+  "form_providers": {
+    "prefer_provider_api": true,
+    "browser_fallback_for_known_providers": false
+  },
+  "yandex_forms_api": {
+    "enabled": true,
+    "base_url": "https://api.forms.yandex.net/v1",
+    "oauth_token_env": "YANDEX_FORMS_OAUTH_TOKEN",
+    "org_id_env": "YANDEX_FORMS_ORG_ID",
+    "cloud_org_id_env": "YANDEX_FORMS_CLOUD_ORG_ID",
+    "form_map_file": "config/yandex_forms.map.json",
+    "dry_run": false,
+    "allow_browser_fallback": false,
+    "timeout_seconds": 60
+  },
+  "google_forms_api": {
+    "enabled": true,
+    "credentials_json_env": "GOOGLE_APPLICATION_CREDENTIALS",
+    "oauth_token_env": "GOOGLE_FORMS_OAUTH_TOKEN",
+    "form_map_file": "config/google_forms.map.json",
+    "dry_run": false,
+    "allow_browser_fallback": false,
+    "timeout_seconds": 60
+  },
   "llm": {
     "enabled": true,
     "provider": "ollama",

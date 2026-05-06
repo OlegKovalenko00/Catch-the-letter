@@ -39,11 +39,15 @@ else()
   if (NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/curl/curl.h")
     message(FATAL_ERROR "libcurl development package was not found and third_party/curl/curl.h is missing. Install libcurl development headers, configure with a valid CURL package, or vendor curl headers under third_party/curl.")
   endif()
-  find_library(CURL_SHARED_RUNTIME
-    NAMES libcurl.so.4 curl libcurl
-    PATHS /usr/lib /usr/lib/x86_64-linux-gnu /lib /lib/x86_64-linux-gnu
-    NO_DEFAULT_PATH
-  )
+  if (WIN32)
+    find_library(CURL_SHARED_RUNTIME NAMES curl libcurl libcurl.dll.a)
+  else()
+    find_library(CURL_SHARED_RUNTIME
+      NAMES libcurl.so.4 curl libcurl
+      PATHS /usr/lib /usr/lib/x86_64-linux-gnu /lib /lib/x86_64-linux-gnu
+      NO_DEFAULT_PATH
+    )
+  endif()
   if (NOT CURL_SHARED_RUNTIME)
     message(FATAL_ERROR "libcurl development package was not found and no shared runtime libcurl.so.4 was found. Install libcurl4/libcurl runtime or the libcurl development package.")
   endif()
@@ -62,11 +66,15 @@ else()
   if (NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/sqlite3.h")
     message(FATAL_ERROR "SQLite3 development package was not found and third_party/sqlite3.h is missing. Install SQLite3 development headers or vendor sqlite3.h.")
   endif()
-  find_library(SQLITE3_SHARED_RUNTIME
-    NAMES libsqlite3.so.0 sqlite3 libsqlite3
-    PATHS /usr/lib /usr/lib/x86_64-linux-gnu /lib /lib/x86_64-linux-gnu
-    NO_DEFAULT_PATH
-  )
+  if (WIN32)
+    find_library(SQLITE3_SHARED_RUNTIME NAMES sqlite3 libsqlite3 sqlite3.dll.a)
+  else()
+    find_library(SQLITE3_SHARED_RUNTIME
+      NAMES libsqlite3.so.0 sqlite3 libsqlite3
+      PATHS /usr/lib /usr/lib/x86_64-linux-gnu /lib /lib/x86_64-linux-gnu
+      NO_DEFAULT_PATH
+    )
+  endif()
   if (NOT SQLITE3_SHARED_RUNTIME)
     message(FATAL_ERROR "SQLite3 development package was not found and no shared runtime libsqlite3.so.0 was found. Install libsqlite3 runtime or the SQLite3 development package.")
   endif()
@@ -117,6 +125,7 @@ add_executable(catch_the_letter
   src/app/App.cpp
   src/app/Config.cpp
   src/app/EmailClassifier.cpp
+  src/app/FormProviderRouter.cpp
   src/app/FormUnderstandingEngine.cpp
   src/app/TelegramDialogManager.cpp
   src/app/UserProfileLoader.cpp
@@ -125,6 +134,7 @@ add_executable(catch_the_letter
   src/infra/MailClientMock.cpp
   src/infra/MailClientImap.cpp
   src/infra/BrowserWorkerClient.cpp
+  src/infra/GoogleFormsProvider.cpp
   src/infra/NoopLlmClient.cpp
   src/infra/OllamaClient.cpp
   src/infra/TelegramBot.cpp
@@ -134,6 +144,7 @@ add_executable(catch_the_letter
   src/infra/SqliteStorage.cpp
   src/infra/HttpServer.cpp
   src/infra/UrlPolicy.cpp
+  src/infra/YandexFormsProvider.cpp
 )
 
 target_include_directories(catch_the_letter PRIVATE

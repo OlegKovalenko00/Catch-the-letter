@@ -119,7 +119,7 @@
   }
 
   function resultPayload(data) {
-    return data?.data || data;
+    return data?.data || data?.details || data;
   }
 
   function badge(label, tone = "neutral") {
@@ -143,6 +143,41 @@
 
   function humanStatus(status) {
     return statusLabels[status] || status || "unknown";
+  }
+
+  function isProviderMode(form) {
+    return ["yandex_forms_api", "google_forms_api", "google_forms_response_endpoint"].includes(form?.submit_strategy);
+  }
+
+  function humanProvider(form) {
+    if (form?.provider_name) return form.provider_name;
+    if (form?.provider_type === "yandex_forms") return "Yandex Forms";
+    if (form?.provider_type === "google_forms") return "Google Forms";
+    return "Generic Browser";
+  }
+
+  function humanExtraction(strategy) {
+    const map = {
+      yandex_forms_mapping: "mapping file",
+      yandex_forms_api: "API",
+      google_forms_mapping: "mapping file",
+      google_forms_api: "API",
+      browser_dom: "browser DOM",
+      captcha_blocked: "captcha blocked",
+      manual: "manual"
+    };
+    return map[strategy] || strategy || "browser DOM";
+  }
+
+  function humanSubmitStrategy(strategy) {
+    const map = {
+      yandex_forms_api: "API",
+      google_forms_api: "API",
+      google_forms_response_endpoint: "response endpoint",
+      browser_worker: "browser",
+      manual: "manual"
+    };
+    return map[strategy] || strategy || "browser";
   }
 
   function summarizeForm(form) {
@@ -341,6 +376,8 @@
             <div class="form-card__meta">
               ${badge(humanStatus(form.status), toneForStatus(form.status))}
               ${badge(form.form_type || "unknown", "neutral")}
+              ${badge(humanProvider(form), isProviderMode(form) ? "ok" : "neutral")}
+              ${badge(humanSubmitStrategy(form.submit_strategy), isProviderMode(form) ? "ok" : "neutral")}
               <span>${escapeHtml(domainFromUrl(form.form_url))}</span>
             </div>
             <div class="progress-line">
@@ -380,12 +417,20 @@
       <div class="stack">
         ${badge(humanStatus(form.status), toneForStatus(form.status))}
         ${badge(form.form_type || "unknown", "neutral")}
+        ${badge(humanProvider(form), isProviderMode(form) ? "ok" : "neutral")}
+        ${badge(`extraction: ${humanExtraction(form.extraction_strategy)}`, form.extraction_strategy === "captcha_blocked" ? "error" : "neutral")}
+        ${badge(`submit: ${humanSubmitStrategy(form.submit_strategy)}`, isProviderMode(form) ? "ok" : "neutral")}
+        ${isProviderMode(form) ? badge("No browser automation needed", "ok") : ""}
       </div>
+      ${form.provider_error ? `<div class="inline-error">${escapeHtml(form.provider_error)}</div>` : ""}
     `;
 
     $("#open-original-button").disabled = !form.form_url;
     $("#submit-button").hidden = form.status !== "waiting_submit_confirm";
     $("#fill-button").hidden = form.status !== "waiting_user_review";
+    $("#fill-button").textContent = isProviderMode(form) ? "Prepare response" : "Fill form";
+    $("#submit-button").textContent = isProviderMode(form) ? "Submit via provider" : "Submit";
+    $("#reinspect-button").disabled = isProviderMode(form);
     $("#save-fields-button").disabled = !["waiting_user_review", "waiting_submit_confirm"].includes(form.status);
     $("#remap-button").disabled = form.status !== "waiting_user_review";
     $("#remap-button").textContent = llmUsesOllama() ? "Remap with AI" : "Remap with rules";
@@ -807,7 +852,7 @@
     const data = await api("/api/forms/inspect-url", {
       method: "POST",
       body: JSON.stringify({ url, debug: $("#manual-debug").checked })
-    });
+    }, { allowOkFalse: true });
     showInspectResult(data);
   }
 
@@ -821,7 +866,7 @@
     const data = await api("/api/forms/create-from-url", {
       method: "POST",
       body: JSON.stringify({ url, title: "Manual test form", debug: $("#manual-debug").checked })
-    });
+    }, { allowOkFalse: true });
     showResult("#manual-result", data, data.ok ? "ok" : "warn");
     await refreshAll();
     const payload = resultPayload(data);
@@ -841,10 +886,26 @@
         <div class="inspect-result__summary">
           ${badge(data.ok ? "OK" : "ERROR", data.ok ? "ok" : "error")}
           ${badge(payload.form_type || "unknown", "neutral")}
+          ${badge(humanProvider(payload), payload.provider_type === "generic_browser" ? "neutral" : "ok")}
+          ${badge(`extraction: ${humanExtraction(payload.extraction_strategy)}`, payload.extraction_strategy === "captcha_blocked" ? "error" : "neutral")}
+          ${badge(`submit: ${humanSubmitStrategy(payload.submit_strategy)}`, payload.submit_strategy === "browser_worker" ? "neutral" : "ok")}
           ${payload.auth_required ? badge("auth required", "warn") : badge("no auth", "ok")}
+          ${payload.captcha_required ? badge("captcha blocked", "error") : ""}
           <span>${fields.length} fields</span>
         </div>
+        ${payload.provider_error ? `<div class="inline-error">${escapeHtml(payload.provider_error)}</div>` : ""}
         ${payload.error ? `<div class="inline-error">${escapeHtml(payload.error)}</div>` : ""}
+        ${!data.ok && payload.provider_type !== "generic_browser" ? `
+          <div class="warning-box">
+            This is a Yandex/Google form. Provider mode is required. Configure API token or mapping file.
+          </div>
+          <div class="button-row">
+            <a class="button" href="/config/yandex_forms.map.example.json" target="_blank" rel="noreferrer">Configure mapping</a>
+            <a class="button button--ghost" href="${escapeHtml(payload.url || $("#manual-url").value || "#")}" target="_blank" rel="noreferrer">Open original</a>
+            <button class="button" type="button" onclick="inspectUrl()">Retry</button>
+            <button class="button button--ghost" type="button" onclick="createFormFromUrl()">Manual</button>
+          </div>
+        ` : ""}
         <div class="field-preview">
           ${fields.map(field => `<div><strong>${escapeHtml(field.label || field.id)}</strong><span>${escapeHtml(field.type || "")}</span></div>`).join("") || "Поля не найдены."}
         </div>

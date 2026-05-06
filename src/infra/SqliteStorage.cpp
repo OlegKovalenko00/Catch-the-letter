@@ -63,7 +63,15 @@ static json form_fields_to_json(const std::vector<form_field>& fields) {
         {"aria_label", field.aria_label},
         {"nearby_text", field.nearby_text},
         {"yandex_question_id", field.yandex_question_id},
-        {"yandex_option_ids", field.yandex_option_ids}
+        {"yandex_option_ids", field.yandex_option_ids},
+        {"api_question_id", field.api_question_id},
+        {"api_answer_type", field.api_answer_type},
+        {"api_option_ids", field.api_option_ids},
+        {"provider", field.provider},
+        {"submit_strategy", field.submit_strategy},
+        {"semantic_key_hint", field.semantic_key_hint},
+        {"virtual_field", field.virtual_field},
+        {"diagnostic_only", field.diagnostic_only}
     });
   }
   return arr;
@@ -126,6 +134,18 @@ static std::vector<form_field> form_fields_from_json(const std::string& text) {
           if (value.is_string()) field.yandex_option_ids.push_back(value.get<std::string>());
         }
       }
+      field.api_question_id = item.value("api_question_id", "");
+      field.api_answer_type = item.value("api_answer_type", "");
+      if (item.contains("api_option_ids") && item["api_option_ids"].is_array()) {
+        for (const auto& value : item["api_option_ids"]) {
+          if (value.is_string()) field.api_option_ids.push_back(value.get<std::string>());
+        }
+      }
+      field.provider = item.value("provider", "");
+      field.submit_strategy = item.value("submit_strategy", "");
+      field.semantic_key_hint = item.value("semantic_key_hint", "");
+      field.virtual_field = item.value("virtual_field", false);
+      field.diagnostic_only = item.value("diagnostic_only", false);
       fields.push_back(std::move(field));
     }
   } catch (...) {
@@ -202,6 +222,15 @@ public:
       " unknown_fields_json TEXT NOT NULL,"
       " auth_state_json TEXT NOT NULL,"
       " browser_session_id TEXT,"
+      " provider_type TEXT,"
+      " provider_name TEXT,"
+      " extraction_strategy TEXT,"
+      " submit_strategy TEXT,"
+      " api_form_id TEXT,"
+      " public_form_id TEXT,"
+      " provider_debug_json TEXT,"
+      " provider_error TEXT,"
+      " captcha_required INTEGER NOT NULL DEFAULT 0,"
       " created_at TEXT NOT NULL,"
       " updated_at TEXT NOT NULL"
       ");";
@@ -260,6 +289,7 @@ public:
         return;
       }
     }
+    ensure_active_form_session_columns();
   }
 
   ~sqlite_storage() override {
@@ -481,8 +511,10 @@ public:
     const char* sql =
       "INSERT INTO active_form_session "
       "(id, mailbox_id, message_uid, status, form_url, form_type, title, fields_json, "
-      " proposed_values_json, unknown_fields_json, auth_state_json, browser_session_id, created_at, updated_at)"
-      " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+      " proposed_values_json, unknown_fields_json, auth_state_json, browser_session_id, "
+      " provider_type, provider_name, extraction_strategy, submit_strategy, api_form_id, public_form_id, "
+      " provider_debug_json, provider_error, captcha_required, created_at, updated_at)"
+      " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return session.id;
     bind_form_session(stmt, session);
@@ -496,7 +528,8 @@ public:
     if (!db) return std::nullopt;
     const char* sql =
       "SELECT id, mailbox_id, message_uid, status, form_url, form_type, title, fields_json, "
-      "auth_state_json, browser_session_id, created_at, updated_at "
+      "auth_state_json, browser_session_id, provider_type, provider_name, extraction_strategy, submit_strategy, "
+      "api_form_id, public_form_id, provider_debug_json, provider_error, captcha_required, created_at, updated_at "
       "FROM active_form_session WHERE id = ? LIMIT 1;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
@@ -517,13 +550,15 @@ public:
     if (!db) return result;
     const char* sql = all ?
       "SELECT id, mailbox_id, message_uid, status, form_url, form_type, title, fields_json, "
-      "auth_state_json, browser_session_id, created_at, updated_at "
+      "auth_state_json, browser_session_id, provider_type, provider_name, extraction_strategy, submit_strategy, "
+      "api_form_id, public_form_id, provider_debug_json, provider_error, captcha_required, created_at, updated_at "
       "FROM active_form_session "
       "ORDER BY updated_at DESC;" :
       "SELECT id, mailbox_id, message_uid, status, form_url, form_type, title, fields_json, "
-      "auth_state_json, browser_session_id, created_at, updated_at "
+      "auth_state_json, browser_session_id, provider_type, provider_name, extraction_strategy, submit_strategy, "
+      "api_form_id, public_form_id, provider_debug_json, provider_error, captcha_required, created_at, updated_at "
       "FROM active_form_session "
-      "WHERE status IN ('waiting_user_review', 'waiting_auth', 'waiting_2fa', 'waiting_submit_confirm', 'failed') "
+      "WHERE status IN ('waiting_user_review', 'waiting_auth', 'waiting_2fa', 'waiting_submit_confirm', 'manual_required', 'failed') "
       "ORDER BY updated_at DESC;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
@@ -540,7 +575,9 @@ public:
     const char* sql =
       "UPDATE active_form_session SET "
       "mailbox_id=?, message_uid=?, status=?, form_url=?, form_type=?, title=?, fields_json=?, "
-      "proposed_values_json=?, unknown_fields_json=?, auth_state_json=?, browser_session_id=?, updated_at=? "
+      "proposed_values_json=?, unknown_fields_json=?, auth_state_json=?, browser_session_id=?, "
+      "provider_type=?, provider_name=?, extraction_strategy=?, submit_strategy=?, api_form_id=?, public_form_id=?, "
+      "provider_debug_json=?, provider_error=?, captcha_required=?, updated_at=? "
       "WHERE id=?;";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
@@ -670,6 +707,26 @@ public:
   }
 
 private:
+  void ensure_active_form_session_columns() {
+    const char* statements[] = {
+        "ALTER TABLE active_form_session ADD COLUMN provider_type TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN provider_name TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN extraction_strategy TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN submit_strategy TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN api_form_id TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN public_form_id TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN provider_debug_json TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN provider_error TEXT;",
+        "ALTER TABLE active_form_session ADD COLUMN captcha_required INTEGER NOT NULL DEFAULT 0;"
+    };
+    for (const char* sql : statements) {
+      char* alter_err = nullptr;
+      if (sqlite3_exec(db, sql, nullptr, nullptr, &alter_err) != SQLITE_OK) {
+        sqlite3_free(alter_err);
+      }
+    }
+  }
+
   static std::string text_column(sqlite3_stmt* stmt, int index) {
     const unsigned char* text = sqlite3_column_text(stmt, index);
     return text ? reinterpret_cast<const char*>(text) : "";
@@ -707,8 +764,17 @@ private:
     sqlite3_bind_text(stmt, 10, unknown.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 11, session.auth_state_json.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 12, session.browser_session_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 13, session.created_at.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 14, session.updated_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, session.provider_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, session.provider_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 15, session.extraction_strategy.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 16, session.submit_strategy.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 17, session.api_form_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 18, session.public_form_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 19, session.provider_debug_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 20, session.provider_error.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 21, session.captcha_required ? 1 : 0);
+    sqlite3_bind_text(stmt, 22, session.created_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 23, session.updated_at.c_str(), -1, SQLITE_TRANSIENT);
   }
 
   static void bind_form_session_update(sqlite3_stmt* stmt, const form_session& session) {
@@ -727,8 +793,17 @@ private:
     sqlite3_bind_text(stmt, 9, unknown.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 10, session.auth_state_json.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 11, session.browser_session_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 12, updated.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 13, session.id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 12, session.provider_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, session.provider_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, session.extraction_strategy.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 15, session.submit_strategy.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 16, session.api_form_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 17, session.public_form_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 18, session.provider_debug_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 19, session.provider_error.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 20, session.captcha_required ? 1 : 0);
+    sqlite3_bind_text(stmt, 21, updated.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 22, session.id.c_str(), -1, SQLITE_TRANSIENT);
   }
 
   static form_session read_form_session(sqlite3_stmt* stmt) {
@@ -743,8 +818,17 @@ private:
     session.fields = form_fields_from_json(text_column(stmt, 7));
     session.auth_state_json = text_column(stmt, 8);
     session.browser_session_id = text_column(stmt, 9);
-    session.created_at = text_column(stmt, 10);
-    session.updated_at = text_column(stmt, 11);
+    session.provider_type = text_column(stmt, 10);
+    session.provider_name = text_column(stmt, 11);
+    session.extraction_strategy = text_column(stmt, 12);
+    session.submit_strategy = text_column(stmt, 13);
+    session.api_form_id = text_column(stmt, 14);
+    session.public_form_id = text_column(stmt, 15);
+    session.provider_debug_json = text_column(stmt, 16);
+    session.provider_error = text_column(stmt, 17);
+    session.captcha_required = sqlite3_column_int(stmt, 18) != 0;
+    session.created_at = text_column(stmt, 19);
+    session.updated_at = text_column(stmt, 20);
     return session;
   }
 

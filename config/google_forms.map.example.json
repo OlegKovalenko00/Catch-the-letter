@@ -1,0 +1,33 @@
+{
+  "FORM_ID_OR_PUBLIC_ID": {
+    "title": "Google Form test",
+    "submit_mode": "response_endpoint",
+    "form_response_url": "https://docs.google.com/forms/d/e/.../formResponse",
+    "questions": [
+      {
+        "api_question_id": "entry.123456",
+        "label": "Full name",
+        "type": "text",
+        "required": true,
+        "semantic_key_hint": "full_name"
+      },
+      {
+        "api_question_id": "entry.234567",
+        "label": "Email",
+        "type": "email",
+        "required": true,
+        "semantic_key_hint": "personal_email"
+      },
+      {
+        "api_question_id": "entry.345678",
+        "label": "Rating",
+        "type": "radio_group",
+        "required": true,
+        "options": [
+          {"label": "5", "value": "5", "id": "5"},
+          {"label": "4", "value": "4", "id": "4"}
+        ]
+      }
+    ]
+  }
+}

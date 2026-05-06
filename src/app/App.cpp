@@ -1,7 +1,10 @@
 #include "App.h"
 
+#include "FormProviderRouter.h"
 #include "FormUnderstandingEngine.h"
 
+#include "../infra/GoogleFormsProvider.h"
+#include "../infra/YandexFormsProvider.h"
 #include "../util/Json.h"
 #include "../infra/UrlPolicy.h"
 
@@ -137,13 +140,27 @@ static nlohmann::json form_field_to_json(const form_field& field) {
       {"aria_label", field.aria_label},
       {"nearby_text", field.nearby_text},
       {"yandex_question_id", field.yandex_question_id},
-      {"yandex_option_ids", field.yandex_option_ids}
+      {"yandex_option_ids", field.yandex_option_ids},
+      {"api_question_id", field.api_question_id},
+      {"api_answer_type", field.api_answer_type},
+      {"api_option_ids", field.api_option_ids},
+      {"provider", field.provider},
+      {"submit_strategy", field.submit_strategy},
+      {"semantic_key_hint", field.semantic_key_hint},
+      {"virtual_field", field.virtual_field},
+      {"diagnostic_only", field.diagnostic_only}
   };
 }
 
 static nlohmann::json form_session_to_json(const form_session& session) {
   nlohmann::json fields = nlohmann::json::array();
   for (const auto& field : session.fields) fields.push_back(form_field_to_json(field));
+  nlohmann::json provider_debug = nlohmann::json::object();
+  try {
+    provider_debug = nlohmann::json::parse(session.provider_debug_json.empty() ? "{}" : session.provider_debug_json);
+  } catch (...) {
+    provider_debug = session.provider_debug_json;
+  }
   return {
       {"id", session.id},
       {"mailbox_id", session.mailbox_id},
@@ -155,6 +172,15 @@ static nlohmann::json form_session_to_json(const form_session& session) {
       {"fields", fields},
       {"auth_state", session.auth_state_json},
       {"browser_session_id", session.browser_session_id},
+      {"provider_type", session.provider_type},
+      {"provider_name", session.provider_name},
+      {"extraction_strategy", session.extraction_strategy},
+      {"submit_strategy", session.submit_strategy},
+      {"api_form_id", session.api_form_id},
+      {"public_form_id", session.public_form_id},
+      {"provider_debug", provider_debug},
+      {"provider_error", session.provider_error},
+      {"captcha_required", session.captcha_required},
       {"created_at", session.created_at},
       {"updated_at", session.updated_at}
   };
@@ -176,6 +202,7 @@ static nlohmann::json form_snapshot_to_json(const form_snapshot& snapshot) {
       {"title", snapshot.title},
       {"form_type", snapshot.form_type},
       {"auth_required", snapshot.auth_required},
+      {"captcha_required", snapshot.captcha_required},
       {"screenshot_path", snapshot.screenshot_path},
       {"fields", fields},
       {"debug", debug}
@@ -220,6 +247,24 @@ static nlohmann::json api_error(std::string error, nlohmann::json details = nloh
       {"error", std::move(error)},
       {"details", std::move(details)}
   };
+}
+
+static bool is_provider_session_json(const form_session& session) {
+  return is_provider_submit_strategy(session.submit_strategy);
+}
+
+static void apply_provider_metadata(form_session& session, const provider_inspect_result& inspect) {
+  session.provider_type = inspect.provider;
+  session.provider_name = inspect.provider == "yandex_forms" ? "Yandex Forms API" :
+                          inspect.provider == "google_forms" ? "Google Forms API" :
+                          inspect.provider;
+  session.extraction_strategy = inspect.extraction_strategy;
+  session.submit_strategy = inspect.submit_strategy;
+  session.api_form_id = inspect.api_form_id;
+  session.public_form_id = inspect.public_form_id;
+  session.provider_debug_json = inspect.debug_json.empty() ? "{}" : inspect.debug_json;
+  session.provider_error = inspect.error;
+  session.captcha_required = inspect.captcha_required;
 }
 
 static message make_sample_form_message() {
@@ -624,6 +669,14 @@ std::string app::status_json() const {
       {"proxy_url_redacted", redact_proxy_url(cfg.telegram.proxy_url)}
   };
   j["browser_worker"] = {{"enabled", cfg.browser_worker.enabled}, {"endpoint", cfg.browser_worker.endpoint}};
+  j["form_providers"] = {
+      {"prefer_provider_api", cfg.form_providers.prefer_provider_api},
+      {"browser_fallback_for_known_providers", cfg.form_providers.browser_fallback_for_known_providers},
+      {"yandex_api_enabled", cfg.yandex_forms_api.enabled},
+      {"yandex_mapping_file", cfg.yandex_forms_api.form_map_file},
+      {"google_api_enabled", cfg.google_forms_api.enabled},
+      {"google_mapping_file", cfg.google_forms_api.form_map_file}
+  };
   j["llm"] = {
       {"enabled", cfg.llm.enabled},
       {"provider", cfg.llm.provider},
@@ -854,6 +907,30 @@ std::string app::config_json() const {
       {"enabled", cfg.browser_worker.enabled},
       {"endpoint", cfg.browser_worker.endpoint},
       {"timeout_seconds", cfg.browser_worker.timeout_seconds}
+  };
+  out["form_providers"] = {
+      {"prefer_provider_api", cfg.form_providers.prefer_provider_api},
+      {"browser_fallback_for_known_providers", cfg.form_providers.browser_fallback_for_known_providers}
+  };
+  out["yandex_forms_api"] = {
+      {"enabled", cfg.yandex_forms_api.enabled},
+      {"base_url", cfg.yandex_forms_api.base_url},
+      {"oauth_token_configured", !cfg.yandex_forms_api.oauth_token.empty()},
+      {"org_id_configured", !cfg.yandex_forms_api.org_id.empty()},
+      {"cloud_org_id_configured", !cfg.yandex_forms_api.cloud_org_id.empty()},
+      {"form_map_file", cfg.yandex_forms_api.form_map_file},
+      {"dry_run", cfg.yandex_forms_api.dry_run},
+      {"allow_browser_fallback", cfg.yandex_forms_api.allow_browser_fallback},
+      {"timeout_seconds", cfg.yandex_forms_api.timeout_seconds}
+  };
+  out["google_forms_api"] = {
+      {"enabled", cfg.google_forms_api.enabled},
+      {"credentials_json_configured", !cfg.google_forms_api.credentials_json.empty()},
+      {"oauth_token_configured", !cfg.google_forms_api.oauth_token.empty()},
+      {"form_map_file", cfg.google_forms_api.form_map_file},
+      {"dry_run", cfg.google_forms_api.dry_run},
+      {"allow_browser_fallback", cfg.google_forms_api.allow_browser_fallback},
+      {"timeout_seconds", cfg.google_forms_api.timeout_seconds}
   };
   out["llm"] = {
       {"enabled", cfg.llm.enabled},
@@ -1154,11 +1231,51 @@ std::string app::inspect_form_url_json(const std::string& body) {
   if (!is_allowed_url(url, cfg.security, reason)) {
     return api_error(reason, {{"url", sanitize_url_for_log(url)}}).dump(2);
   }
+  form_provider_router router(cfg);
+  provider_route route = router.route_for_url(url);
+  if (route.provider_type == form_provider_type::yandex_forms) {
+    yandex_forms_provider provider(cfg.yandex_forms_api);
+    auto inspected = provider.inspect(url);
+    nlohmann::json out = form_snapshot_to_json(inspected.snapshot);
+    out["provider_type"] = inspected.provider;
+    out["provider_name"] = "Yandex Forms";
+    out["extraction_strategy"] = inspected.extraction_strategy.empty() ? "manual" : inspected.extraction_strategy;
+    out["submit_strategy"] = inspected.submit_strategy.empty() ? "manual" : inspected.submit_strategy;
+    out["public_form_id"] = inspected.public_form_id;
+    out["api_form_id"] = inspected.api_form_id;
+    out["manual_required"] = inspected.manual_required;
+    out["captcha_required"] = inspected.captcha_required;
+    out["provider_error"] = inspected.error;
+    out["browser_fallback_allowed"] = route.allow_browser_fallback;
+    if (!inspected.ok) return api_error(inspected.error.empty() ? "provider inspect failed" : inspected.error, out).dump(2);
+    return api_success("form inspected through provider", out).dump(2);
+  }
+  if (route.provider_type == form_provider_type::google_forms) {
+    google_forms_provider provider(cfg.google_forms_api);
+    auto inspected = provider.inspect(url);
+    nlohmann::json out = form_snapshot_to_json(inspected.snapshot);
+    out["provider_type"] = inspected.provider;
+    out["provider_name"] = "Google Forms";
+    out["extraction_strategy"] = inspected.extraction_strategy.empty() ? "manual" : inspected.extraction_strategy;
+    out["submit_strategy"] = inspected.submit_strategy.empty() ? "manual" : inspected.submit_strategy;
+    out["public_form_id"] = inspected.public_form_id;
+    out["api_form_id"] = inspected.api_form_id;
+    out["manual_required"] = inspected.manual_required;
+    out["captcha_required"] = inspected.captcha_required;
+    out["provider_error"] = inspected.error;
+    out["browser_fallback_allowed"] = route.allow_browser_fallback;
+    if (!inspected.ok) return api_error(inspected.error.empty() ? "provider inspect failed" : inspected.error, out).dump(2);
+    return api_success("form inspected through provider", out).dump(2);
+  }
   auto snapshot = browser_ptr->inspect_form(url, err, debug);
   if (!snapshot.has_value()) {
     return api_error(err.empty() ? "inspect failed" : err).dump(2);
   }
   nlohmann::json out = form_snapshot_to_json(*snapshot);
+  out["provider_type"] = "generic_browser";
+  out["provider_name"] = "Generic Browser";
+  out["extraction_strategy"] = snapshot->captcha_required ? "captcha_blocked" : "browser_dom";
+  out["submit_strategy"] = snapshot->captcha_required ? "manual" : "browser_worker";
   if (!snapshot->session_id.empty()) {
     std::string close_err;
     browser_ptr->close_session(snapshot->session_id, close_err);
@@ -1196,6 +1313,69 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
                        {{"session_id", id}, {"status", "manual_required"}}).dump(2);
   }
 
+  form_provider_router router(cfg);
+  provider_route route = router.route_for_url(url);
+  if (route.provider_type == form_provider_type::yandex_forms || route.provider_type == form_provider_type::google_forms) {
+    provider_inspect_result inspected;
+    if (route.provider_type == form_provider_type::yandex_forms) {
+      yandex_forms_provider provider(cfg.yandex_forms_api);
+      inspected = provider.inspect(url);
+    } else {
+      google_forms_provider provider(cfg.google_forms_api);
+      inspected = provider.inspect(url);
+    }
+
+    message msg;
+    msg.uid = "manual-" + std::to_string(std::time(nullptr));
+    msg.mailbox_id = "manual";
+    msg.provider = "manual";
+    msg.subject = title;
+    msg.body_text = "Manual form: " + url;
+    msg.links.push_back({url, "", 0.95});
+
+    form_session session;
+    session.mailbox_id = msg.mailbox_id;
+    session.message_uid = msg.uid;
+    session.form_url = inspected.snapshot.url.empty() ? url : inspected.snapshot.url;
+    session.form_type = route.provider_type == form_provider_type::yandex_forms ? "yandex_forms" : "google_forms";
+    session.title = inspected.snapshot.title.empty() ? title : inspected.snapshot.title;
+    apply_provider_metadata(session, inspected);
+    if (inspected.ok) {
+      session.status = "waiting_user_review";
+      form_snapshot mapped = inspected.snapshot;
+      mapped.url = session.form_url;
+      mapped.title = session.title;
+      mapped.debug_json = inspected.debug_json;
+      session.fields = llm_ptr->map_fields(msg, mapped, profile);
+    } else {
+      session.status = "manual_required";
+      session.submit_strategy = "manual";
+      session.provider_error = inspected.error;
+    }
+    std::string id = storage_ptr->create_form_session(session);
+    if (inspected.ok) {
+      auto saved = storage_ptr->get_form_session(id);
+      if (saved && saved->status == "waiting_user_review") {
+        std::string send_err;
+        workflow_ptr->send_form_review(*saved, send_err);
+      }
+      append_event("info", "provider_form_session_created", "Provider form session created",
+                   {{"session_id", id}, {"provider", session.provider_type}, {"status", session.status}});
+      return api_success("provider form session created",
+                         {{"session_id", id}, {"status", session.status}, {"provider_type", session.provider_type}}).dump(2);
+    }
+    append_event("warning", "provider_manual_required", inspected.error,
+                 {{"session_id", id}, {"provider", session.provider_type}, {"browser_fallback_allowed", route.allow_browser_fallback}});
+    nlohmann::json details = {
+        {"session_id", id},
+        {"status", session.status},
+        {"provider_type", session.provider_type},
+        {"provider_error", inspected.error},
+        {"browser_fallback_allowed", route.allow_browser_fallback}
+    };
+    return api_error(inspected.error.empty() ? "provider setup required" : inspected.error, details).dump(2);
+  }
+
   auto snapshot = browser_ptr->inspect_form(url, err, debug);
   if (!snapshot.has_value()) {
     form_session manual;
@@ -1205,6 +1385,10 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
     manual.form_url = url;
     manual.form_type = "unknown";
     manual.title = title;
+    manual.provider_type = "generic_browser";
+    manual.provider_name = "Generic Browser";
+    manual.submit_strategy = "manual";
+    manual.provider_error = err;
     std::string id = storage_ptr->create_form_session(manual);
     append_event("error", "manual_form_inspect_failed", err, {{"session_id", id}, {"url", sanitize_url_for_log(url)}});
     return api_error(err.empty() ? "inspect failed" : err,
@@ -1226,9 +1410,19 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
   session.form_type = snapshot->form_type;
   session.title = snapshot->title.empty() ? title : snapshot->title;
   session.browser_session_id = snapshot->session_id;
+  session.provider_type = "generic_browser";
+  session.provider_name = "Generic Browser";
+  session.extraction_strategy = snapshot->captcha_required ? "captcha_blocked" : "browser_dom";
+  session.submit_strategy = "browser_worker";
+  session.provider_debug_json = snapshot->debug_json;
+  session.captcha_required = snapshot->captcha_required;
   if (snapshot->auth_required) {
     session.status = "waiting_auth";
     session.auth_state_json = nlohmann::json({{"state", "required"}, {"url", snapshot->final_url}}).dump();
+  } else if (snapshot->captcha_required) {
+    session.status = "manual_required";
+    session.submit_strategy = "manual";
+    session.provider_error = "captcha_required";
   } else if (snapshot->fields.empty()) {
     session.status = "manual_required";
   } else {

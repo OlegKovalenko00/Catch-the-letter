@@ -59,6 +59,38 @@ struct browser_worker_config {
   int timeout_seconds = 60;
 };
 
+struct form_providers_config {
+  bool prefer_provider_api = true;
+  bool browser_fallback_for_known_providers = false;
+};
+
+struct yandex_forms_api_config {
+  bool enabled = true;
+  std::string base_url = "https://api.forms.yandex.net/v1";
+  std::string oauth_token_env = "YANDEX_FORMS_OAUTH_TOKEN";
+  std::string org_id_env = "YANDEX_FORMS_ORG_ID";
+  std::string cloud_org_id_env = "YANDEX_FORMS_CLOUD_ORG_ID";
+  std::string oauth_token;
+  std::string org_id;
+  std::string cloud_org_id;
+  std::string form_map_file = "config/yandex_forms.map.json";
+  bool dry_run = false;
+  bool allow_browser_fallback = false;
+  int timeout_seconds = 60;
+};
+
+struct google_forms_api_config {
+  bool enabled = true;
+  std::string credentials_json_env = "GOOGLE_APPLICATION_CREDENTIALS";
+  std::string oauth_token_env = "GOOGLE_FORMS_OAUTH_TOKEN";
+  std::string credentials_json;
+  std::string oauth_token;
+  std::string form_map_file = "config/google_forms.map.json";
+  bool dry_run = false;
+  bool allow_browser_fallback = false;
+  int timeout_seconds = 60;
+};
+
 struct llm_config {
   bool enabled = true;
   std::string provider = "ollama";
@@ -104,6 +136,9 @@ struct app_config {
   http_config http;
   storage_config storage;
   browser_worker_config browser_worker;
+  form_providers_config form_providers;
+  yandex_forms_api_config yandex_forms_api;
+  google_forms_api_config google_forms_api;
   llm_config llm;
   security_config security;
   auth_config auth;

@@ -54,7 +54,7 @@ Body is full profile JSON. New sessions use the updated profile.
 
 `GET /api/forms/active`
 
-Returns active statuses: `waiting_user_review`, `waiting_auth`, `waiting_2fa`, `waiting_submit_confirm`, `failed`.
+Returns active statuses: `waiting_user_review`, `waiting_auth`, `waiting_2fa`, `waiting_submit_confirm`, `manual_required`, `failed`.
 
 `GET /api/forms/active?all=true`
 
@@ -95,11 +95,39 @@ Returns one session.
   "question_block_text": "...",
   "placeholder": "",
   "aria_label": "",
-  "nearby_text": ""
+  "nearby_text": "",
+  "api_question_id": "entry.123456",
+  "api_answer_type": "text",
+  "api_option_ids": [],
+  "provider": "google_forms",
+  "submit_strategy": "google_forms_response_endpoint",
+  "semantic_key_hint": "personal_email",
+  "virtual_field": true,
+  "diagnostic_only": false
 }
 ```
 
 For backward compatibility, browser-worker and storage accept old `options: ["5","4","3"]` and new option objects.
+
+Provider/API fields may not have a browser `selector`. Missing selector is valid for `yandex_forms_api`, `google_forms_api`, and `google_forms_response_endpoint`. Browser-worker fill still requires selectors.
+
+### Provider Session Fields
+
+Form sessions include provider routing metadata:
+
+```json
+{
+  "provider_type": "yandex_forms|google_forms|generic_browser",
+  "provider_name": "Yandex Forms API",
+  "extraction_strategy": "yandex_forms_mapping|yandex_forms_api|google_forms_mapping|google_forms_api|browser_dom|captcha_blocked",
+  "submit_strategy": "yandex_forms_api|google_forms_api|google_forms_response_endpoint|browser_worker|manual",
+  "api_form_id": "",
+  "public_form_id": "69f8f79049af47b200b98c44",
+  "provider_debug": {"payload_preview": {}},
+  "provider_error": "",
+  "captcha_required": false
+}
+```
 
 ### Update Fields
 
@@ -175,11 +203,13 @@ Returns mapping source, reason, confidence, risk and suggested next action for o
 
 `POST /api/forms/{id}/fill`
 
-Validates and fills the browser form. Required empty/unsupported fields block.
+For browser sessions, validates and fills the browser form. Required empty/unsupported fields block.
+
+For provider sessions, validates values and prepares the API/response-endpoint payload. Status becomes `waiting_submit_confirm` and an `api_response_prepared` event is logged. No browser session or selector is required.
 
 `POST /api/forms/{id}/submit`
 
-Submits only from `waiting_submit_confirm`. If browser-worker returns `needs_next`, fields are updated and status becomes `waiting_user_review`.
+Submits only from `waiting_submit_confirm`. Provider sessions call the configured provider submit strategy. Browser sessions call browser-worker; if it returns `needs_next`, fields are updated and status becomes `waiting_user_review`.
 
 `POST /api/forms/{id}/manual`
 
@@ -259,6 +289,54 @@ Creates `waiting_auth`, `waiting_user_review`, or `manual_required` and returns:
 ```json
 {"ok": true, "session_id": "...", "status": "waiting_user_review"}
 ```
+
+Known Yandex/Google URLs are inspected through provider mode first. If mapping/API is missing and browser fallback is disabled, the response is `ok=false` with `details.session_id`, `details.status=manual_required`, and a provider error.
+
+## Provider Mapping Schemas
+
+Yandex Forms mapping:
+
+```json
+{
+  "PUBLIC_FORM_ID": {
+    "title": "Yandex form",
+    "submit_mode": "api",
+    "api_form_id": "",
+    "questions": [
+      {
+        "api_question_id": "full_name",
+        "label": "ФИО",
+        "type": "text",
+        "required": true,
+        "semantic_key_hint": "full_name"
+      }
+    ]
+  }
+}
+```
+
+Google Forms mapping:
+
+```json
+{
+  "FORM_ID_OR_PUBLIC_ID": {
+    "title": "Google Form",
+    "submit_mode": "response_endpoint",
+    "form_response_url": "https://docs.google.com/forms/d/e/.../formResponse",
+    "questions": [
+      {
+        "api_question_id": "entry.123456",
+        "label": "Email",
+        "type": "email",
+        "required": true,
+        "semantic_key_hint": "personal_email"
+      }
+    ]
+  }
+}
+```
+
+Dry-run provider submit returns `submitted=true` and stores `provider_debug.payload_preview`. Real provider credentials are required only for non-dry-run API submit.
 
 ## Tests
 

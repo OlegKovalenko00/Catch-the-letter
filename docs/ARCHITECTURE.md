@@ -18,7 +18,9 @@ IMAP mailbox(es)
 - `Config`: JSON config loader with old `imap` compatibility and new `mailboxes` array.
 - `MailClientImap`: generic IMAP over libcurl with MIME subject/body/link extraction.
 - `RuleEngine`: rule matching over sender, subject, body, provider, dates, links, and attachments.
-- `WorkflowEngine`: important notification, form detection, browser inspect/fill/submit, auth, 2FA, manual/cancel.
+- `WorkflowEngine`: important notification, form detection, provider/browser inspect, provider/browser fill/submit, auth, 2FA, manual/cancel.
+- `FormProviderRouter`: detects Yandex Forms, Google Forms, or generic browser forms and chooses the submit strategy.
+- `YandexFormsProvider` / `GoogleFormsProvider`: mapping/API inspect and dry-run/real provider submit.
 - `BrowserWorkerClient`: JSON HTTP client for the browser-worker.
 - `TelegramDialogManager`: polling, callbacks, guided missing-field answers, batch edit fallback, Remap callback, 2FA dialog flow.
 - `HttpServer`: local Web UI static file serving plus REST API. It loads `web/index.html`, `web/app.js`, and `web/styles.css` from `/app/web` in Docker or `./web` in local runs, with a tiny fallback page if files are missing.
@@ -46,6 +48,37 @@ Mapping order:
 7. Final fillability validation reports missing required, invalid options, unsupported required fields and warnings.
 
 `Remap with AI` reruns mapping but preserves fields edited by the user. `Validate` checks missing required fields, invalid options and unsupported required controls before fill.
+
+## Provider Router Decision Tree
+
+Form URLs are routed before browser inspect:
+
+```text
+URL
+  -> forms.yandex.ru with /u/ or final forms.yandex.ru
+       -> provider_type=yandex_forms
+       -> inspect through YandexFormsProvider
+       -> submit_strategy=yandex_forms_api
+       -> browser fallback only when explicitly enabled
+  -> docs.google.com/forms, forms.gle, google.com/forms, /forms/d/e/, /forms/d/
+       -> provider_type=google_forms
+       -> inspect through GoogleFormsProvider
+       -> submit_strategy=google_forms_api or google_forms_response_endpoint
+       -> browser fallback only when explicitly enabled
+  -> everything else
+       -> provider_type=generic_browser
+       -> BrowserWorkerProvider path
+       -> submit_strategy=browser_worker
+```
+
+Known provider inspect order:
+
+1. Extract public form id from URL.
+2. Load mapping file entry, if present.
+3. Use configured provider API credentials for metadata, if available.
+4. Return `manual_required` with a clear provider error.
+
+Yandex/Google provider fields can be reviewed and remapped without browser selectors. Fill prepares a provider payload and logs `api_response_prepared`; submit calls the provider. Browser-worker is no longer the default route for Yandex/Google because public UIs may show SmartCaptcha/captcha.
 
 The default config enables Ollama with `qwen3:4b`, but startup and `/api/test/llm` perform best-effort resource and JSON-mode probes. If RAM is below `llm.min_memory_gb`, the endpoint is unavailable, or the model is still pulling, the app reports `llm_fallback` and continues with Noop. Docker profile `llm` includes `ollama-init` to preload the configured model.
 
@@ -123,7 +156,7 @@ waiting_auth
 
 ## Browser Worker
 
-The worker extracts generic HTML fields and best-effort Google/Yandex/Microsoft/HSE/LMS-like question blocks. It supports text inputs, textarea, select, checkbox, radio groups, checkbox groups, auth credentials, one-time code screens, multi-page next buttons, submit buttons, screenshots, and best-effort session cleanup.
+The worker extracts generic HTML fields and best-effort Microsoft/HSE/LMS-like question blocks. It supports text inputs, textarea, select, checkbox, radio groups, checkbox groups, auth credentials, one-time code screens, multi-page next buttons, submit buttons, screenshots, and best-effort session cleanup. Captcha/SmartCaptcha pages return `captcha_required=true` and `fields=[]`; captcha checkboxes are not treated as form fields.
 
 ## OS and Network Modes
 

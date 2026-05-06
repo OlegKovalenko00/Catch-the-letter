@@ -43,8 +43,54 @@ Open:
 http://127.0.0.1:8080
 ```
 
-The Web UI has buttons for Test Browser, Test Telegram, Test IMAP, Test LLM, Create Demo Form, Create Demo Auth Form, and Manual / Yandex Form Test.
+The Web UI has buttons for Test Browser, Test Telegram, Test IMAP, Test LLM, Create Demo Form, Create Demo Auth Form, and Form Provider Test.
 The UI is served from `web/index.html`, `web/app.js`, and `web/styles.css`; Docker copies these files into `/app/web`.
+
+## Two Form Modes
+
+Catch the Letter uses two form modes:
+
+1. Provider/API mode for known providers: Yandex Forms and Google Forms. This is recommended and default. It avoids public UI automation and captcha-prone pages. It requires API credentials or a mapping file.
+2. Browser mode for generic websites. This uses Playwright/browser-worker and is best-effort. Captcha, auth, file uploads, and unsupported controls fall back to manual review.
+
+Browser automation is not the default path for Yandex Forms or Google Forms. Browser fallback for known providers is off by default and must be explicitly enabled with `KNOWN_FORMS_BROWSER_FALLBACK=true` or provider-specific `allow_browser_fallback=true`.
+
+## Yandex Forms Provider Setup
+
+Provider config:
+
+```env
+FORM_PROVIDERS_PREFER_API=true
+KNOWN_FORMS_BROWSER_FALLBACK=false
+YANDEX_FORMS_API_ENABLED=true
+YANDEX_FORMS_OAUTH_TOKEN=
+YANDEX_FORMS_ORG_ID=
+YANDEX_FORMS_CLOUD_ORG_ID=
+YANDEX_FORMS_MAP_FILE=config/yandex_forms.map.json
+YANDEX_FORMS_DRY_RUN=false
+```
+
+Use `config/yandex_forms.map.example.json` as a template. Mapping mode can extract fields without browser selectors. Dry-run submit builds and stores a provider payload preview without requiring a real token.
+
+For real API submit, configure the OAuth token and the form/org ids required by your Yandex Forms API access. If neither mapping nor usable credentials are configured, the session becomes `manual_required` with a clear provider error instead of silently opening the public UI.
+
+## Google Forms Provider Setup
+
+Provider config:
+
+```env
+GOOGLE_FORMS_API_ENABLED=true
+GOOGLE_APPLICATION_CREDENTIALS=
+GOOGLE_FORMS_OAUTH_TOKEN=
+GOOGLE_FORMS_MAP_FILE=config/google_forms.map.json
+GOOGLE_FORMS_DRY_RUN=false
+```
+
+Use `config/google_forms.map.example.json` as a template. Metadata can come from a mapping file or Google Forms API token. Submit is explicit: dry-run previews payloads, `submit_mode=response_endpoint` posts mapped `entry.*` values to a configured `form_response_url`, and `manual` performs no submit.
+
+## Why Browser Is Not Default For Yandex/Google
+
+Public Yandex/Google form UIs can show SmartCaptcha/captcha or dynamic controls that are unstable for automation. Provider API/mapping mode is deterministic, reviewable, and does not require scraping the public UI. Browser mode remains available for generic sites and for known providers only when fallback is explicitly enabled.
 
 ## Windows 10/11 + Docker Desktop
 
@@ -267,7 +313,7 @@ Passwords are entered only in Web UI. Password and 2FA inputs are cleared after 
 
 The mapping pipeline is deterministic first and LLM-assisted second: normalized labels/question text are matched to profile aliases, values are checked against field type/options, Ollama suggestions are schema-validated, low-confidence results ask for user input, and `user_modified` fields are not overwritten unless a force remap is requested.
 
-## Manual / Yandex Form Test
+## Form Provider Test
 
 Create a simple Yandex Form with:
 
@@ -278,7 +324,7 @@ Create a simple Yandex Form with:
 - `Интересы` checkbox
 - `Комментарий` textarea
 
-Paste the URL into the Web UI block “Manual / Yandex Form Test”:
+Paste the URL into the Web UI block `Form Provider Test`:
 
 1. Inspect.
 2. Check fields/debug output.
@@ -384,6 +430,7 @@ Logs and API responses redact Telegram tokens, IMAP passwords, password/code/coo
 ```bash
 scripts/smoke_build.sh
 scripts/smoke_llm.sh
+scripts/smoke_providers.sh
 python3 -m py_compile browser-worker/main.py
 ```
 

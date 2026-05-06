@@ -1,0 +1,41 @@
+{
+  "69f8f79049af47b200b98c44": {
+    "title": "Тест - Яндекс Формы",
+    "submit_mode": "api",
+    "api_form_id": "",
+    "questions": [
+      {
+        "api_question_id": "full_name",
+        "label": "ФИО",
+        "type": "text",
+        "required": true,
+        "semantic_key_hint": "full_name"
+      },
+      {
+        "api_question_id": "email",
+        "label": "Email",
+        "type": "email",
+        "required": true,
+        "semantic_key_hint": "hse_email"
+      },
+      {
+        "api_question_id": "group",
+        "label": "Группа",
+        "type": "text",
+        "required": true,
+        "semantic_key_hint": "student_group"
+      },
+      {
+        "api_question_id": "rating",
+        "label": "Оценка",
+        "type": "radio_group",
+        "required": true,
+        "options": [
+          {"label": "5", "value": "5", "id": "5"},
+          {"label": "4", "value": "4", "id": "4"},
+          {"label": "3", "value": "3", "id": "3"}
+        ]
+      }
+    ]
+  }
+}

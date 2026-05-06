@@ -261,6 +261,64 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.browser_worker.timeout_seconds =
       get_int(browser_worker, "timeout_seconds", out.browser_worker.timeout_seconds);
 
+  const json form_providers = root.value("form_providers", json::object());
+  out.form_providers.prefer_provider_api =
+      get_bool(form_providers, "prefer_provider_api", out.form_providers.prefer_provider_api);
+  out.form_providers.browser_fallback_for_known_providers = get_bool(
+      form_providers,
+      "browser_fallback_for_known_providers",
+      out.form_providers.browser_fallback_for_known_providers
+  );
+  apply_env_override(out.form_providers.prefer_provider_api, "FORM_PROVIDERS_PREFER_API");
+  apply_env_override(out.form_providers.browser_fallback_for_known_providers, "KNOWN_FORMS_BROWSER_FALLBACK");
+
+  const json yandex_forms_api = root.value("yandex_forms_api", json::object());
+  out.yandex_forms_api.enabled = get_bool(yandex_forms_api, "enabled", out.yandex_forms_api.enabled);
+  out.yandex_forms_api.base_url = get_string(yandex_forms_api, "base_url", out.yandex_forms_api.base_url);
+  out.yandex_forms_api.oauth_token_env =
+      get_string(yandex_forms_api, "oauth_token_env", out.yandex_forms_api.oauth_token_env);
+  out.yandex_forms_api.org_id_env =
+      get_string(yandex_forms_api, "org_id_env", out.yandex_forms_api.org_id_env);
+  out.yandex_forms_api.cloud_org_id_env =
+      get_string(yandex_forms_api, "cloud_org_id_env", out.yandex_forms_api.cloud_org_id_env);
+  out.yandex_forms_api.oauth_token = get_env_value(yandex_forms_api, "oauth_token_env");
+  out.yandex_forms_api.org_id = get_env_value(yandex_forms_api, "org_id_env");
+  out.yandex_forms_api.cloud_org_id = get_env_value(yandex_forms_api, "cloud_org_id_env");
+  out.yandex_forms_api.form_map_file =
+      get_string(yandex_forms_api, "form_map_file", out.yandex_forms_api.form_map_file);
+  out.yandex_forms_api.dry_run = get_bool(yandex_forms_api, "dry_run", out.yandex_forms_api.dry_run);
+  out.yandex_forms_api.allow_browser_fallback =
+      get_bool(yandex_forms_api, "allow_browser_fallback", out.yandex_forms_api.allow_browser_fallback);
+  out.yandex_forms_api.timeout_seconds =
+      get_int(yandex_forms_api, "timeout_seconds", out.yandex_forms_api.timeout_seconds);
+  apply_env_override(out.yandex_forms_api.enabled, "YANDEX_FORMS_API_ENABLED");
+  apply_env_override(out.yandex_forms_api.oauth_token, out.yandex_forms_api.oauth_token_env.c_str());
+  apply_env_override(out.yandex_forms_api.org_id, out.yandex_forms_api.org_id_env.c_str());
+  apply_env_override(out.yandex_forms_api.cloud_org_id, out.yandex_forms_api.cloud_org_id_env.c_str());
+  apply_env_override(out.yandex_forms_api.form_map_file, "YANDEX_FORMS_MAP_FILE");
+  apply_env_override(out.yandex_forms_api.dry_run, "YANDEX_FORMS_DRY_RUN");
+
+  const json google_forms_api = root.value("google_forms_api", json::object());
+  out.google_forms_api.enabled = get_bool(google_forms_api, "enabled", out.google_forms_api.enabled);
+  out.google_forms_api.credentials_json_env =
+      get_string(google_forms_api, "credentials_json_env", out.google_forms_api.credentials_json_env);
+  out.google_forms_api.oauth_token_env =
+      get_string(google_forms_api, "oauth_token_env", out.google_forms_api.oauth_token_env);
+  out.google_forms_api.credentials_json = get_env_value(google_forms_api, "credentials_json_env");
+  out.google_forms_api.oauth_token = get_env_value(google_forms_api, "oauth_token_env");
+  out.google_forms_api.form_map_file =
+      get_string(google_forms_api, "form_map_file", out.google_forms_api.form_map_file);
+  out.google_forms_api.dry_run = get_bool(google_forms_api, "dry_run", out.google_forms_api.dry_run);
+  out.google_forms_api.allow_browser_fallback =
+      get_bool(google_forms_api, "allow_browser_fallback", out.google_forms_api.allow_browser_fallback);
+  out.google_forms_api.timeout_seconds =
+      get_int(google_forms_api, "timeout_seconds", out.google_forms_api.timeout_seconds);
+  apply_env_override(out.google_forms_api.enabled, "GOOGLE_FORMS_API_ENABLED");
+  apply_env_override(out.google_forms_api.credentials_json, out.google_forms_api.credentials_json_env.c_str());
+  apply_env_override(out.google_forms_api.oauth_token, out.google_forms_api.oauth_token_env.c_str());
+  apply_env_override(out.google_forms_api.form_map_file, "GOOGLE_FORMS_MAP_FILE");
+  apply_env_override(out.google_forms_api.dry_run, "GOOGLE_FORMS_DRY_RUN");
+
   const json llm = root.value("llm", json::object());
   out.llm.enabled = get_bool(llm, "enabled", out.llm.enabled);
   out.llm.provider = get_string(llm, "provider", out.llm.provider);

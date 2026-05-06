@@ -69,6 +69,23 @@ form_field parse_field(const json& item) {
   field.aria_label = item.value("aria_label", "");
   field.nearby_text = item.value("nearby_text", "");
   field.yandex_question_id = item.value("yandex_question_id", "");
+  if (item.contains("yandex_option_ids") && item["yandex_option_ids"].is_array()) {
+    for (const auto& value : item["yandex_option_ids"]) {
+      if (value.is_string()) field.yandex_option_ids.push_back(value.get<std::string>());
+    }
+  }
+  field.api_question_id = item.value("api_question_id", "");
+  field.api_answer_type = item.value("api_answer_type", "");
+  if (item.contains("api_option_ids") && item["api_option_ids"].is_array()) {
+    for (const auto& value : item["api_option_ids"]) {
+      if (value.is_string()) field.api_option_ids.push_back(value.get<std::string>());
+    }
+  }
+  field.provider = item.value("provider", "");
+  field.submit_strategy = item.value("submit_strategy", "");
+  field.semantic_key_hint = item.value("semantic_key_hint", "");
+  field.virtual_field = item.value("virtual_field", false);
+  field.diagnostic_only = item.value("diagnostic_only", false);
   return field;
 }
 
@@ -212,6 +229,7 @@ std::optional<form_snapshot> browser_worker_client::inspect_form(const std::stri
   snapshot.title = response.value("title", "");
   snapshot.form_type = response.value("form_type", "unknown");
   snapshot.auth_required = response.value("auth_required", false);
+  snapshot.captcha_required = response.value("captcha_required", false);
   snapshot.screenshot_path = response.value("screenshot_path", "");
   if (response.contains("debug")) snapshot.debug_json = response["debug"].dump();
   if (response.contains("fields") && response["fields"].is_array()) {
@@ -320,6 +338,7 @@ std::optional<form_snapshot> browser_worker_client::reinspect_form(const std::st
   snapshot.title = response.value("title", "");
   snapshot.form_type = response.value("form_type", "unknown");
   snapshot.auth_required = response.value("auth_required", false);
+  snapshot.captcha_required = response.value("captcha_required", false);
   snapshot.screenshot_path = response.value("screenshot_path", "");
   if (response.contains("debug")) snapshot.debug_json = response["debug"].dump();
   if (response.contains("fields") && response["fields"].is_array()) {

@@ -205,6 +205,32 @@ async def detect_auth_required(page: Page) -> bool:
     return any(marker in text for marker in markers)
 
 
+async def detect_captcha_required(page: Page) -> bool:
+    try:
+        text = (await page.locator("body").inner_text(timeout=3000)).lower()
+    except Exception:
+        text = ""
+    markers = ["smartcaptcha", "captcha", "recaptcha", "hcaptcha", "i am not a robot", "я не робот"]
+    if any(marker in text for marker in markers):
+        return True
+    selectors = [
+        ".SmartCaptcha",
+        "[class*='captcha' i]",
+        "[id*='captcha' i]",
+        "[data-testid*='captcha' i]",
+        "iframe[src*='captcha' i]",
+        "iframe[src*='recaptcha' i]",
+        "iframe[src*='hcaptcha' i]",
+    ]
+    for selector in selectors:
+        try:
+            if await page.locator(selector).count():
+                return True
+        except Exception:
+            pass
+    return False
+
+
 async def screenshot(page: Page, session_id: str, suffix: str) -> str:
     path = DATA_DIR / f"{session_id}-{suffix}.png"
     await page.screenshot(path=str(path), full_page=True)
@@ -305,6 +331,19 @@ FIELD_SCRIPT = r"""
     if (rect.width <= 0 || rect.height <= 0) return false;
     return true;
   }
+  function isCaptchaNode(node) {
+    const text = (node.innerText || node.getAttribute('aria-label') || '').toLowerCase();
+    if (text.includes('captcha') || text.includes('smartcaptcha') || text.includes('recaptcha') || text.includes('hcaptcha')) return true;
+    let cur = node;
+    while (cur && cur !== document.body) {
+      const cls = String(cur.className || '').toLowerCase();
+      const id = String(cur.id || '').toLowerCase();
+      const data = Array.from(cur.attributes || []).map(a => `${a.name}=${a.value}`).join(' ').toLowerCase();
+      if (cls.includes('captcha') || id.includes('captcha') || data.includes('captcha')) return true;
+      cur = cur.parentElement;
+    }
+    return false;
+  }
   const nodes = Array.from(document.querySelectorAll(
     'input:not([type="hidden"]), textarea, select, [role="textbox"], [role="radio"], [role="checkbox"]'
   ));
@@ -313,6 +352,7 @@ FIELD_SCRIPT = r"""
   const groups = new Map();
   for (const node of nodes) {
     if (!isVisible(node)) continue;
+    if (isCaptchaNode(node)) continue;
     const rawType = (node.getAttribute('type') || '').toLowerCase();
     const role = (node.getAttribute('role') || '').toLowerCase();
     if (rawType === 'radio' || rawType === 'checkbox' || role === 'radio' || role === 'checkbox') {
@@ -469,6 +509,21 @@ function doCode() {
 """)
 
 
+@app.get("/demo-captcha")
+async def demo_captcha() -> Any:
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse("""
+<!doctype html><html><body>
+<h1>Captcha demo</h1>
+<form>
+  <div class="SmartCaptcha" data-testid="smartcaptcha">
+    <label><input type="checkbox" name="smartcaptcha"> I am not a robot</label>
+  </div>
+</form>
+</body></html>
+""")
+
+
 @app.post("/inspect-form")
 async def inspect_form(req: InspectRequest) -> dict[str, Any]:
     await cleanup_expired_sessions()
@@ -493,11 +548,12 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
           except Exception:
               pass
       auth_required = await detect_auth_required(page)
+      captcha_required = await detect_captcha_required(page)
       shot = await screenshot(page, sid, "inspect")
       fields: list[dict[str, Any]] = []
       extraction_errors: list[str] = []
-      extraction_strategy_used = "auth_required" if auth_required else "dom_controls"
-      if not auth_required:
+      extraction_strategy_used = "captcha_blocked" if captcha_required else ("auth_required" if auth_required else "dom_controls")
+      if not auth_required and not captcha_required:
           for _ in range(3):
               try:
                   fields = await page.evaluate(FIELD_SCRIPT)
@@ -512,7 +568,7 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
           visible_text = await page.locator("body").inner_text(timeout=3000)
       except Exception as exc:
           extraction_errors.append(str(exc))
-      if not auth_required and not fields and visible_text:
+      if not auth_required and not captcha_required and not fields and visible_text:
           fields = infer_virtual_fields_from_text(visible_text)
           if fields:
               extraction_strategy_used = "visible_text_virtual_fields"
@@ -538,8 +594,9 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
               "extraction_errors": extraction_errors,
               "form_type": form_type_for(page.url or req.url),
               "auth_required": auth_required,
+              "captcha_required": captcha_required,
               "screenshot_path": shot,
-              "error": "" if fields or auth_required else "no interactive form fields found",
+              "error": "captcha_required" if captcha_required else ("" if fields or auth_required else "no interactive form fields found"),
           }
       sessions[sid] = {
           "playwright": playwright,
@@ -557,13 +614,14 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
           "title": await page.title(),
           "form_type": form_type_for(page.url or req.url),
           "auth_required": auth_required,
+          "captcha_required": captcha_required,
           "fields": fields,
           "screenshot_path": shot,
           "debug": debug_info,
-          "error": "" if fields or auth_required else "no interactive form fields found",
+          "error": "captcha_required" if captcha_required else ("" if fields or auth_required else "no interactive form fields found"),
       }
     except Exception as exc:
-      return {"ok": False, "session_id": sid, "url": req.url, "fields": [], "error": str(exc)}
+      return {"ok": False, "session_id": sid, "url": req.url, "fields": [], "captcha_required": False, "error": str(exc)}
 
 
 async def fill_one(page: Page, field: FillField) -> None:

@@ -1,6 +1,10 @@
 #include "WorkflowEngine.h"
 
+#include "FormProviderRouter.h"
 #include "FormUnderstandingEngine.h"
+
+#include "../infra/GoogleFormsProvider.h"
+#include "../infra/YandexFormsProvider.h"
 
 #include <algorithm>
 #include <chrono>
@@ -65,6 +69,41 @@ std::string field_title(const form_field& field) {
   if (!field.label.empty()) return field.label;
   if (!field.id.empty()) return field.id;
   return field.selector;
+}
+
+bool is_provider_session(const form_session& session) {
+  return is_provider_submit_strategy(session.submit_strategy);
+}
+
+bool browser_field_missing_selector(const form_field& field) {
+  if (!field.can_auto_fill) return false;
+  if (field.value.empty() && field.values.empty()) return false;
+  return field.selector.empty();
+}
+
+void apply_provider_metadata(form_session& session, const provider_inspect_result& inspect) {
+  session.provider_type = inspect.provider;
+  session.provider_name = inspect.provider == "yandex_forms" ? "Yandex Forms API" :
+                          inspect.provider == "google_forms" ? "Google Forms API" :
+                          inspect.provider;
+  session.extraction_strategy = inspect.extraction_strategy;
+  session.submit_strategy = inspect.submit_strategy;
+  session.api_form_id = inspect.api_form_id;
+  session.public_form_id = inspect.public_form_id;
+  session.provider_debug_json = inspect.debug_json.empty() ? "{}" : inspect.debug_json;
+  session.provider_error = inspect.error;
+  session.captcha_required = inspect.captcha_required;
+}
+
+form_snapshot provider_snapshot_for_mapping(const provider_inspect_result& inspect,
+                                            const std::string& fallback_url,
+                                            const std::string& fallback_title) {
+  form_snapshot snapshot = inspect.snapshot;
+  if (snapshot.url.empty()) snapshot.url = fallback_url;
+  if (snapshot.title.empty()) snapshot.title = fallback_title;
+  snapshot.debug_json = inspect.debug_json.empty() ? "{}" : inspect.debug_json;
+  snapshot.captcha_required = inspect.captcha_required;
+  return snapshot;
 }
 
 }  // namespace
@@ -279,6 +318,54 @@ bool workflow_engine::start_form_workflow(const message& msg,
     return false;
   }
 
+  form_provider_router router(cfg);
+  provider_route route = router.route_for_url(chosen->url);
+  if (route.provider_type == form_provider_type::yandex_forms || route.provider_type == form_provider_type::google_forms) {
+    provider_inspect_result inspected;
+    if (route.provider_type == form_provider_type::yandex_forms) {
+      yandex_forms_provider provider(cfg.yandex_forms_api);
+      inspected = provider.inspect(chosen->url);
+    } else {
+      google_forms_provider provider(cfg.google_forms_api);
+      inspected = provider.inspect(chosen->url);
+    }
+    if (inspected.ok) {
+      form_session session;
+      session.mailbox_id = msg.mailbox_id;
+      session.message_uid = msg.uid;
+      session.form_url = inspected.snapshot.url.empty() ? chosen->url : inspected.snapshot.url;
+      session.form_type = route.provider_type == form_provider_type::yandex_forms ? "yandex_forms" : "google_forms";
+      session.title = inspected.snapshot.title.empty() ? msg.subject : inspected.snapshot.title;
+      session.status = "waiting_user_review";
+      apply_provider_metadata(session, inspected);
+      form_snapshot mapped_snapshot = provider_snapshot_for_mapping(inspected, chosen->url, session.title);
+      session.fields = llm.map_fields(msg, mapped_snapshot, profile);
+      std::string id = store.create_form_session(session);
+      append_event("info", "provider_form_inspected", "Known form provider inspected form",
+                   {{"session_id", id}, {"provider", session.provider_type}, {"extraction_strategy", session.extraction_strategy}});
+      auto saved = store.get_form_session(id);
+      if (saved) send_form_review(*saved, reason);
+      status = "form_waiting_user";
+      return true;
+    }
+    if (!route.allow_browser_fallback || inspected.captcha_required) {
+      form_session session;
+      session.mailbox_id = msg.mailbox_id;
+      session.message_uid = msg.uid;
+      session.status = "manual_required";
+      session.form_url = chosen->url;
+      session.form_type = route.provider_type == form_provider_type::yandex_forms ? "yandex_forms" : "google_forms";
+      session.title = msg.subject;
+      apply_provider_metadata(session, inspected);
+      session.submit_strategy = "manual";
+      std::string id = store.create_form_session(session);
+      notify_manual("Known Yandex/Google form provider is not configured. Browser fallback is disabled by default to avoid captcha/public UI.\n\n" + inspected.error + "\n\n" + chosen->url);
+      append_event("warning", "provider_manual_required", inspected.error, {{"session_id", id}, {"provider", session.provider_type}});
+      status = "manual_required";
+      return false;
+    }
+  }
+
   std::string err;
   auto snapshot = browser.inspect_form(chosen->url, err);
   if (!snapshot.has_value()) {
@@ -310,6 +397,12 @@ bool workflow_engine::start_form_workflow(const message& msg,
   session.form_type = snapshot->form_type;
   session.title = snapshot->title.empty() ? msg.subject : snapshot->title;
   session.browser_session_id = snapshot->session_id;
+  session.provider_type = "generic_browser";
+  session.provider_name = "Generic Browser";
+  session.extraction_strategy = snapshot->captcha_required ? "captcha_blocked" : "browser_dom";
+  session.submit_strategy = "browser_worker";
+  session.provider_debug_json = snapshot->debug_json;
+  session.captcha_required = snapshot->captcha_required;
 
   if (snapshot->auth_required) {
     session.status = "waiting_auth";
@@ -346,6 +439,21 @@ bool workflow_engine::start_form_workflow(const message& msg,
     }
     status = "form_waiting_auth";
     return true;
+  }
+
+  if (snapshot->captcha_required) {
+    session.status = "manual_required";
+    session.captcha_required = true;
+    std::string id = store.create_form_session(session);
+    notify_manual("Captcha blocked form inspection. Open the original form manually:\n" + chosen->url);
+    {
+      json data = json::object();
+      data["session_id"] = id;
+      data["url"] = sanitize_url_for_log(chosen->url);
+      append_event("warning", "captcha_required", "Captcha blocked form inspect", data);
+    }
+    status = "manual_required";
+    return false;
   }
 
   if (snapshot->fields.empty()) {
@@ -429,6 +537,7 @@ bool workflow_engine::send_form_review(const form_session& session, std::string&
      << "3. Отправка будет отдельным подтверждением после заполнения.\n\n"
      << "Формат ответа:\n1: значение\nfield_id: значение";
 
+  const std::string fill_label = is_provider_session(session) ? "Prepare response" : "Fill form";
   std::vector<std::vector<telegram_button>> buttons = {
       {{"Открыть Web UI", "form:" + session.id + ":open"}, {"Ответить здесь", "form:" + session.id + ":edit"}},
       {{"Remap", "form:" + session.id + ":remap"}, {"Заполнить форму", "form:" + session.id + ":fill"}},
@@ -436,6 +545,7 @@ bool workflow_engine::send_form_review(const form_session& session, std::string&
       {{"Вручную", "form:" + session.id + ":manual"}, {"Отмена", "form:" + session.id + ":cancel"}}
   };
 
+  if (buttons.size() > 1 && buttons[1].size() > 1) buttons[1][1].text = fill_label;
   if (telegram && telegram->enabled()) return telegram->send_message(ss.str(), buttons, err);
   std::cout << "[FORM REVIEW]\n" << ss.str() << std::endl;
   err.clear();
@@ -483,6 +593,12 @@ bool workflow_engine::create_demo_session(const std::string& url,
   session.form_type = snapshot->form_type;
   session.title = snapshot->title.empty() ? title : snapshot->title;
   session.browser_session_id = snapshot->session_id;
+  session.provider_type = "generic_browser";
+  session.provider_name = "Generic Browser";
+  session.extraction_strategy = snapshot->captcha_required ? "captcha_blocked" : "browser_dom";
+  session.submit_strategy = "browser_worker";
+  session.provider_debug_json = snapshot->debug_json;
+  session.captcha_required = snapshot->captcha_required;
 
   if (snapshot->auth_required) {
     session.status = "waiting_auth";
@@ -520,6 +636,41 @@ bool workflow_engine::fill_form_after_review(const std::string& session_id, std:
     err = "form session not found";
     return false;
   }
+  if (is_provider_session(*session)) {
+    auto validation = validate_understood_fields(session->fields);
+    if (!validation.can_fill) {
+      err = validation.missing_required.empty()
+          ? "provider response validation failed"
+          : "not all required fields are filled";
+      return false;
+    }
+    for (const auto& field : session->fields) {
+      if (field.diagnostic_only) continue;
+      if (field.api_question_id.empty() && field.id.empty()) {
+        err = "provider response requires api_question_id or mapping id";
+        return false;
+      }
+    }
+    nlohmann::json payload = nlohmann::json::object();
+    payload["provider"] = session->provider_type;
+    payload["submit_strategy"] = session->submit_strategy;
+    payload["answers"] = nlohmann::json::object();
+    for (const auto& field : session->fields) {
+      if (field.diagnostic_only) continue;
+      std::string question_id = field.api_question_id.empty() ? field.id : field.api_question_id;
+      if (question_id.empty()) continue;
+      if (!field.values.empty()) payload["answers"][question_id] = field.values;
+      else payload["answers"][question_id] = field.value;
+    }
+    session->provider_debug_json = nlohmann::json({{"payload_preview", payload}}).dump();
+    session->status = "waiting_submit_confirm";
+    store.update_form_session(*session);
+    send_submit_confirmation(*session, err);
+    append_event("info", "api_response_prepared", "Provider response prepared",
+                 {{"session_id", session_id}, {"provider", session->provider_type}, {"submit_strategy", session->submit_strategy}});
+    err.clear();
+    return true;
+  }
   if (session->browser_session_id.empty()) {
     err = "browser session id is empty";
     mark_manual_required(session_id, err);
@@ -541,6 +692,13 @@ bool workflow_engine::fill_form_after_review(const std::string& session_id, std:
       notify_manual("Форма не прошла проверку перед заполнением.");
     }
     return false;
+  }
+  for (const auto& field : session->fields) {
+    if (browser_field_missing_selector(field)) {
+      err = "browser submit requires selectors for fields with values";
+      mark_manual_required(session_id, err);
+      return false;
+    }
   }
   if (!browser.fill_form(session->browser_session_id, session->fields, err)) {
     session->status = "manual_required";
@@ -573,6 +731,36 @@ bool workflow_engine::submit_form_after_confirm(const std::string& session_id, s
   if (cfg.security.require_confirmation_before_submit && session->status != "waiting_submit_confirm") {
     err = "submit confirmation is required";
     return false;
+  }
+  if (is_provider_session(*session)) {
+    provider_submit_result submit;
+    if (session->provider_type == "yandex_forms") {
+      yandex_forms_provider provider(cfg.yandex_forms_api);
+      submit = provider.submit(*session);
+    } else if (session->provider_type == "google_forms") {
+      google_forms_provider provider(cfg.google_forms_api);
+      submit = provider.submit(*session);
+    } else {
+      err = "unknown provider submit strategy";
+      return false;
+    }
+    session->provider_debug_json = submit.debug_json.empty() ? session->provider_debug_json : submit.debug_json;
+    if (!submit.ok || !submit.submitted) {
+      session->status = "failed";
+      session->provider_error = submit.error;
+      store.update_form_session(*session);
+      err = submit.error.empty() ? "provider submit failed" : submit.error;
+      append_event("error", "provider_submit_failed", err,
+                   {{"session_id", session_id}, {"provider", session->provider_type}, {"submit_strategy", session->submit_strategy}});
+      return false;
+    }
+    session->status = "submitted";
+    store.update_form_session(*session);
+    notify_manual("Form submitted via provider.\n\n" + session->title);
+    append_event("info", "provider_form_submitted", "Provider form submitted",
+                 {{"session_id", session_id}, {"provider", session->provider_type}, {"submit_strategy", session->submit_strategy}});
+    err.clear();
+    return true;
   }
   auto submit = browser.submit_form_result(session->browser_session_id, err);
   if (submit.needs_next) {
