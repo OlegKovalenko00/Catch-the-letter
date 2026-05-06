@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Catch the Letter</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">Local assistant</div>
+      <h1>Catch the Letter</h1>
+    </div>
+    <div class="topbar__actions">
+      <button class="button button--ghost" id="refresh-button" type="button">Обновить</button>
+      <button class="button button--primary" id="test-all-button" type="button">Test All</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="nav" aria-label="Основные разделы">
+      <button class="nav__item is-active" data-section="dashboard">Dashboard</button>
+      <button class="nav__item" data-section="manual">Yandex Form Test</button>
+      <button class="nav__item" data-section="forms">Active Forms</button>
+      <button class="nav__item" data-section="review">Form Review</button>
+      <button class="nav__item" data-section="profile">Profile</button>
+      <button class="nav__item" data-section="rules">Rules</button>
+      <button class="nav__item" data-section="events">Events</button>
+      <button class="nav__item" data-section="config">Config</button>
+    </nav>
+
+    <main class="content">
+      <section class="section is-active" id="section-dashboard">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Состояние системы</p>
+            <h2>Dashboard</h2>
+          </div>
+          <div class="button-row">
+            <button class="button" id="test-browser-button" type="button">Test Browser</button>
+            <button class="button" id="test-telegram-button" type="button">Test Telegram</button>
+            <button class="button" id="test-imap-button" type="button">Test IMAP</button>
+            <button class="button" id="test-llm-button" type="button">Test LLM</button>
+          </div>
+        </div>
+
+        <div class="metric-grid" id="dashboard-cards"></div>
+
+        <div class="card">
+          <div class="card__header">
+            <div>
+              <h3>Быстрые проверки</h3>
+              <p>Создайте демо-сессию или проверьте сервисы перед реальной формой.</p>
+            </div>
+          </div>
+          <div class="button-row">
+            <button class="button button--primary" id="create-demo-button" type="button">Create Demo Form</button>
+            <button class="button button--primary" id="create-demo-auth-button" type="button">Create Demo Auth Form</button>
+          </div>
+          <div class="result-panel" id="test-result" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section class="section" id="section-manual">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Проверка без письма</p>
+            <h2>Manual / Yandex Form Test</h2>
+          </div>
+        </div>
+        <div class="card">
+          <div class="form-grid">
+            <label class="field field--wide">
+              <span>Form URL</span>
+              <input id="manual-url" type="url" placeholder="https://forms.yandex.ru/...">
+            </label>
+            <label class="check">
+              <input id="manual-debug" type="checkbox" checked>
+              <span>Debug inspect</span>
+            </label>
+          </div>
+          <div class="button-row">
+            <button class="button" id="inspect-url-button" type="button">Inspect</button>
+            <button class="button button--primary" id="create-from-url-button" type="button">Create session from URL</button>
+            <a class="button button--ghost" id="open-manual-url" href="#" target="_blank" rel="noreferrer">Open original</a>
+          </div>
+          <div class="result-panel" id="manual-result"></div>
+        </div>
+      </section>
+
+      <section class="section" id="section-forms">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Ожидают действия</p>
+            <h2>Active Forms</h2>
+          </div>
+          <label class="check">
+            <input id="show-all-forms" type="checkbox">
+            <span>Показывать завершённые</span>
+          </label>
+        </div>
+        <div class="cards-list" id="forms-list"></div>
+      </section>
+
+      <section class="section" id="section-review">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Проверка перед заполнением</p>
+            <h2>Form Review</h2>
+          </div>
+          <div class="button-row">
+            <button class="button button--ghost" id="open-original-button" type="button">Open original</button>
+            <button class="button" id="reinspect-button" type="button">Reinspect</button>
+          </div>
+        </div>
+        <div id="review-empty" class="empty-state">
+          Выберите форму в разделе Active Forms или создайте demo/manual session.
+        </div>
+        <div id="review-content" class="review-layout" hidden>
+          <aside class="card review-summary" id="review-summary"></aside>
+          <div class="review-main">
+            <div class="card auth-card" id="auth-card" hidden></div>
+            <div class="card">
+              <div class="card__header">
+                <div>
+                  <h3>Поля формы</h3>
+                  <p>Проверьте значения, источники и уверенность сопоставления.</p>
+                </div>
+              </div>
+              <div id="field-list" class="field-list"></div>
+              <div class="error-summary" id="validation-summary" hidden></div>
+              <div class="button-row action-bar">
+                <button class="button" id="save-fields-button" type="button">Save</button>
+                <button class="button" id="remap-button" type="button">Remap with AI</button>
+                <button class="button" id="validate-button" type="button">Validate</button>
+                <button class="button button--primary" id="fill-button" type="button">Fill form</button>
+                <button class="button button--primary" id="submit-button" type="button">Submit</button>
+                <button class="button button--ghost" id="manual-button" type="button">Manual</button>
+                <button class="button button--danger" id="cancel-button" type="button">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="section-profile">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Данные для автозаполнения</p>
+            <h2>Profile Editor</h2>
+          </div>
+          <button class="button button--primary" id="save-profile-button" type="button">Save profile</button>
+        </div>
+        <div class="card">
+          <div class="profile-grid" id="profile-fields"></div>
+          <details class="advanced">
+            <summary>Advanced JSON</summary>
+            <textarea id="profile-json" spellcheck="false"></textarea>
+          </details>
+          <div class="result-panel" id="profile-result"></div>
+        </div>
+      </section>
+
+      <section class="section" id="section-rules">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Правила важности</p>
+            <h2>Rules Editor</h2>
+          </div>
+          <div class="button-row">
+            <button class="button" id="validate-rules-button" type="button">Validate JSON</button>
+            <button class="button button--primary" id="save-rules-button" type="button">Save rules</button>
+          </div>
+        </div>
+        <div class="card">
+          <textarea id="rules-json" class="code-editor" spellcheck="false"></textarea>
+          <div class="result-panel" id="rules-result"></div>
+        </div>
+      </section>
+
+      <section class="section" id="section-events">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Последние события</p>
+            <h2>Events Timeline</h2>
+          </div>
+        </div>
+        <div class="timeline" id="events-list"></div>
+      </section>
+
+      <section class="section" id="section-config">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Текущая конфигурация</p>
+            <h2>Config View</h2>
+          </div>
+        </div>
+        <div class="card">
+          <pre class="json-view" id="config-view"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+  <dialog class="modal" id="confirm-modal">
+    <form method="dialog">
+      <h3 id="confirm-title">Подтвердите действие</h3>
+      <p id="confirm-text"></p>
+      <div class="button-row button-row--right">
+        <button class="button button--ghost" value="cancel">Отмена</button>
+        <button class="button button--primary" id="confirm-ok" value="ok">Подтвердить</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

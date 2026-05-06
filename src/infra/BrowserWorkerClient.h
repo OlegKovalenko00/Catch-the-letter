@@ -22,7 +22,9 @@ public:
   explicit browser_worker_client(browser_worker_config cfg);
 
   bool health(std::string& err) const;
-  std::optional<form_snapshot> inspect_form(const std::string& url, std::string& err) const;
+  std::optional<form_snapshot> inspect_form(const std::string& url,
+                                            std::string& err,
+                                            bool debug = false) const;
   bool fill_form(const std::string& browser_session_id,
                  const std::vector<form_field>& fields,
                  std::string& err) const;

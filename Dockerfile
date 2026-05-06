@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY . .
-RUN cmake -S . -B build \
- && cmake --build build -j
+RUN cmake -S . -B build -DUSE_FETCHCONTENT=OFF -DUSE_SYSTEM_DEPS=OFF \
+ && cmake --build build --parallel 2
 
 FROM ubuntu:22.04
 
@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /app/build/catch_the_letter /app/catch_the_letter
 COPY config /app/config
+COPY web /app/web
 
 EXPOSE 8080
 ENTRYPOINT ["/app/catch_the_letter"]

@@ -17,6 +17,6 @@ struct email_analysis {
   message_kind kind = message_kind::unknown;
   double confidence = 0.0;
   std::string summary;
-  std::vector<link> form_links;
+  std::vector<message_link> form_links;
   bool user_action_required = false;
 };

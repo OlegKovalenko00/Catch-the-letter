@@ -25,6 +25,7 @@
     "enabled": true,
     "bot_token_env": "TELEGRAM_BOT_TOKEN",
     "chat_id_env": "TELEGRAM_CHAT_ID",
+    "proxy_url_env": "TELEGRAM_PROXY_URL",
     "poll_updates": true,
     "poll_interval_seconds": 2
   },
@@ -43,7 +44,7 @@
     "enabled": false,
     "provider": "ollama",
     "endpoint": "http://ollama:11434/api/chat",
-    "model": "qwen3:8b",
+    "model": "qwen3:4b",
     "privacy_mode": "safe",
     "timeout_seconds": 120
   },

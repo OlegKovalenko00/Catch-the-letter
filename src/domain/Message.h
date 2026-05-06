@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-struct link {
+struct message_link {
   std::string url;
   std::string domain;
   double confidence = 0.0;
@@ -29,6 +29,6 @@ struct message {
   std::string body_html;
   std::string date_iso;
   std::vector<std::string> labels;
-  std::vector<link> links;
+  std::vector<message_link> links;
   std::vector<attachment> attachments;
 };

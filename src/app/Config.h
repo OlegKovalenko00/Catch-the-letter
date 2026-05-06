@@ -22,10 +22,14 @@ struct imap_config {
 };
 
 struct telegram_config {
-  bool enabled = false;
+  bool enabled = true;
+  std::string bot_token_env = "TELEGRAM_BOT_TOKEN";
+  std::string chat_id_env = "TELEGRAM_CHAT_ID";
+  std::string proxy_url_env = "TELEGRAM_PROXY_URL";
   std::string bot_token;
   std::string chat_id;
-  bool poll_updates = false;
+  std::string proxy_url;
+  bool poll_updates = true;
   int poll_interval_seconds = 2;
 };
 
@@ -59,7 +63,7 @@ struct llm_config {
   bool enabled = false;
   std::string provider = "ollama";
   std::string endpoint = "http://127.0.0.1:11434/api/chat";
-  std::string model = "qwen3:8b";
+  std::string model = "qwen3:4b";
   std::string privacy_mode = "safe";
   int timeout_seconds = 120;
 };

@@ -31,17 +31,39 @@ static std::string now_iso() {
 static json form_fields_to_json(const std::vector<form_field>& fields) {
   json arr = json::array();
   for (const auto& field : fields) {
+    json options = json::array();
+    for (const auto& option : field.options) {
+      options.push_back({{"label", option.label}, {"value", option.value}, {"selector", option.selector}, {"id", option.id}});
+    }
     arr.push_back({
         {"id", field.id},
         {"selector", field.selector},
         {"label", field.label},
+        {"normalized_label", field.normalized_label},
         {"type", field.type},
         {"required", field.required},
-        {"options", field.options},
+        {"options", options},
         {"value", field.value},
+        {"values", field.values},
+        {"semantic_key", field.semantic_key},
         {"mapped_profile_key", field.mapped_profile_key},
+        {"suggested_value", field.suggested_value},
+        {"option_value", field.option_value},
         {"confidence", field.confidence},
-        {"requires_user_input", field.requires_user_input}
+        {"source", field.source},
+        {"reason", field.reason},
+        {"risk", field.risk},
+        {"requires_user_input", field.requires_user_input},
+        {"can_auto_fill", field.can_auto_fill},
+        {"unsupported_reason", field.unsupported_reason},
+        {"user_modified", field.user_modified},
+        {"validation_error", field.validation_error},
+        {"question_block_text", field.question_block_text},
+        {"placeholder", field.placeholder},
+        {"aria_label", field.aria_label},
+        {"nearby_text", field.nearby_text},
+        {"yandex_question_id", field.yandex_question_id},
+        {"yandex_option_ids", field.yandex_option_ids}
     });
   }
   return arr;
@@ -57,17 +79,53 @@ static std::vector<form_field> form_fields_from_json(const std::string& text) {
       field.id = item.value("id", "");
       field.selector = item.value("selector", "");
       field.label = item.value("label", "");
+      field.normalized_label = item.value("normalized_label", "");
       field.type = item.value("type", "unknown");
       field.required = item.value("required", false);
       if (item.contains("options") && item["options"].is_array()) {
         for (const auto& opt : item["options"]) {
-          if (opt.is_string()) field.options.push_back(opt.get<std::string>());
+          field_option option;
+          if (opt.is_string()) {
+            option.label = opt.get<std::string>();
+            option.value = option.label;
+          } else if (opt.is_object()) {
+            option.label = opt.value("label", "");
+            option.value = opt.value("value", option.label);
+            option.selector = opt.value("selector", "");
+            option.id = opt.value("id", "");
+          }
+          if (!option.label.empty() || !option.value.empty()) field.options.push_back(std::move(option));
         }
       }
       field.value = item.value("value", "");
+      if (item.contains("values") && item["values"].is_array()) {
+        for (const auto& value : item["values"]) {
+          if (value.is_string()) field.values.push_back(value.get<std::string>());
+        }
+      }
+      field.semantic_key = item.value("semantic_key", "");
       field.mapped_profile_key = item.value("mapped_profile_key", "");
+      field.suggested_value = item.value("suggested_value", "");
+      field.option_value = item.value("option_value", "");
       field.confidence = item.value("confidence", 0.0);
+      field.source = item.value("source", "");
+      field.reason = item.value("reason", "");
+      field.risk = item.value("risk", "");
       field.requires_user_input = item.value("requires_user_input", false);
+      field.can_auto_fill = item.value("can_auto_fill", true);
+      field.unsupported_reason = item.value("unsupported_reason", "");
+      field.user_modified = item.value("user_modified", false);
+      field.validation_error = item.value("validation_error", "");
+      field.question_block_text = item.value("question_block_text", "");
+      field.placeholder = item.value("placeholder", "");
+      field.aria_label = item.value("aria_label", "");
+      field.nearby_text = item.value("nearby_text", "");
+      field.yandex_question_id = item.value("yandex_question_id", "");
+      if (item.contains("yandex_option_ids") && item["yandex_option_ids"].is_array()) {
+        for (const auto& value : item["yandex_option_ids"]) {
+          if (value.is_string()) field.yandex_option_ids.push_back(value.get<std::string>());
+        }
+      }
       fields.push_back(std::move(field));
     }
   } catch (...) {

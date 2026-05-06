@@ -117,6 +117,7 @@ add_executable(catch_the_letter
   src/app/App.cpp
   src/app/Config.cpp
   src/app/EmailClassifier.cpp
+  src/app/FormUnderstandingEngine.cpp
   src/app/TelegramDialogManager.cpp
   src/app/UserProfileLoader.cpp
   src/app/WorkflowEngine.cpp

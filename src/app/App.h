@@ -73,8 +73,14 @@ public:
   bool update_profile_json(const std::string& body, std::string& err);
   std::string config_json() const;
   std::string test_browser_json();
+  std::string test_imap_json();
   std::string test_llm_json();
   std::string test_telegram_json();
+  std::string inspect_form_url_json(const std::string& body);
+  std::string create_form_session_from_url_json(const std::string& body);
+  std::string remap_form_json(const std::string& id, const std::string& body = "{}");
+  std::string explain_form_field_json(const std::string& id, const std::string& body);
+  std::string validate_form_json(const std::string& id);
   bool create_demo_form(bool auth_demo, std::string& err);
 
 private:

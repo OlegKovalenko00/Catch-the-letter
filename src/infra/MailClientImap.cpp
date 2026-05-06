@@ -262,7 +262,7 @@ double estimate_form_link_confidence(const std::string& url) {
   return 0.2;
 }
 
-void collect_links(const std::string& text, std::vector<link>& result, std::set<std::string>& seen) {
+void collect_links(const std::string& text, std::vector<message_link>& result, std::set<std::string>& seen) {
   static const std::regex url_regex(R"((https?://[^\s"'<>]+))", std::regex::icase);
 
   auto begin = std::sregex_iterator(text.begin(), text.end(), url_regex);
@@ -271,7 +271,7 @@ void collect_links(const std::string& text, std::vector<link>& result, std::set<
     std::string url = sanitize_url(html_entity_decode((*it)[1].str()));
     if (url.empty() || !seen.insert(url).second) continue;
 
-    link item;
+    message_link item;
     item.url = url;
     item.domain = extract_domain(url);
     item.confidence = estimate_form_link_confidence(url);
@@ -279,14 +279,14 @@ void collect_links(const std::string& text, std::vector<link>& result, std::set<
   }
 }
 
-void collect_href_links(const std::string& html, std::vector<link>& result, std::set<std::string>& seen) {
+void collect_href_links(const std::string& html, std::vector<message_link>& result, std::set<std::string>& seen) {
   static const std::regex href_regex(R"(href\s*=\s*["'](https?://[^"']+)["'])", std::regex::icase);
   auto begin = std::sregex_iterator(html.begin(), html.end(), href_regex);
   auto end = std::sregex_iterator();
   for (auto it = begin; it != end; ++it) {
     std::string url = sanitize_url(html_entity_decode((*it)[1].str()));
     if (url.empty() || !seen.insert(url).second) continue;
-    link item;
+    message_link item;
     item.url = url;
     item.domain = extract_domain(url);
     item.confidence = estimate_form_link_confidence(url);
@@ -294,8 +294,8 @@ void collect_href_links(const std::string& html, std::vector<link>& result, std:
   }
 }
 
-std::vector<link> extract_links(const std::string& text, const std::string& html = "") {
-  std::vector<link> result;
+std::vector<message_link> extract_links(const std::string& text, const std::string& html = "") {
+  std::vector<message_link> result;
   std::set<std::string> seen;
   collect_links(text, result, seen);
   collect_links(html, result, seen);
@@ -308,6 +308,8 @@ std::vector<link> extract_links(const std::string& text, const std::string& html
 class mail_client_imap : public mail_client {
 public:
   explicit mail_client_imap(imap_config cfg) : cfg(std::move(cfg)) {}
+
+  friend imap_test_result test_imap_mailbox(const imap_config& cfg);
 
   std::uint64_t fetch_max_uid() override {
     std::vector<std::string> uids;
@@ -450,4 +452,24 @@ mail_client* make_mail_client_imap(const imap_config& cfg, std::string* err) {
     return nullptr;
   }
   return new mail_client_imap(cfg);
+}
+
+imap_test_result test_imap_mailbox(const imap_config& cfg) {
+  imap_test_result result;
+  if (cfg.host.empty() || cfg.username.empty() || cfg.password.empty()) {
+    result.error = "imap username/password are not configured";
+    return result;
+  }
+  mail_client_imap client(cfg);
+  std::vector<std::string> uids;
+  std::string err;
+  if (!client.fetch_uid_list("UID SEARCH ALL", uids, err)) {
+    result.error = err.empty() ? "imap connection failed" : err;
+    return result;
+  }
+  result.reachable = true;
+  result.auth_ok = true;
+  result.folder_ok = true;
+  for (const auto& uid : uids) result.max_uid = std::max(result.max_uid, parse_uint64_or_zero(uid));
+  return result;
 }

@@ -100,6 +100,11 @@ static std::string get_env_value(const json& obj, const char* key) {
   return val ? std::string(val) : "";
 }
 
+static void apply_env_override(std::string& target, const char* key) {
+  const char* value = std::getenv(key);
+  if (value && std::string(value).empty() == false) target = value;
+}
+
 static void apply_provider_preset(imap_config& cfg) {
   std::string provider = to_lower(cfg.provider);
   if (provider == "yandex") {
@@ -169,10 +174,23 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
 
   const json telegram = root.value("telegram", json::object());
   out.telegram.enabled = get_bool(telegram, "enabled", out.telegram.enabled);
+  out.telegram.bot_token_env = get_string(telegram, "bot_token_env", out.telegram.bot_token_env);
+  out.telegram.chat_id_env = get_string(telegram, "chat_id_env", out.telegram.chat_id_env);
+  out.telegram.proxy_url_env = get_string(telegram, "proxy_url_env", out.telegram.proxy_url_env);
+  if (out.telegram.proxy_url_env.empty()) out.telegram.proxy_url_env = "TELEGRAM_PROXY_URL";
   out.telegram.bot_token = get_string(telegram, "bot_token");
-  if (out.telegram.bot_token.empty()) out.telegram.bot_token = get_env_value(telegram, "bot_token_env");
+  if (out.telegram.bot_token.empty()) {
+    const char* token = std::getenv(out.telegram.bot_token_env.c_str());
+    if (token) out.telegram.bot_token = token;
+  }
   out.telegram.chat_id = get_string(telegram, "chat_id");
-  if (out.telegram.chat_id.empty()) out.telegram.chat_id = get_env_value(telegram, "chat_id_env");
+  if (out.telegram.chat_id.empty()) {
+    const char* chat_id = std::getenv(out.telegram.chat_id_env.c_str());
+    if (chat_id) out.telegram.chat_id = chat_id;
+  }
+  out.telegram.proxy_url = get_string(telegram, "proxy_url", out.telegram.proxy_url);
+  const char* proxy = std::getenv(out.telegram.proxy_url_env.c_str());
+  if (proxy && std::string(proxy).empty() == false) out.telegram.proxy_url = proxy;
   out.telegram.poll_updates = get_bool(telegram, "poll_updates", out.telegram.poll_updates);
   out.telegram.poll_interval_seconds =
       get_int(telegram, "poll_interval_seconds", out.telegram.poll_interval_seconds);
@@ -191,6 +209,15 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.http.port = get_int(http, "port", out.http.port);
   out.http.auth_token = get_string(http, "auth_token", out.http.auth_token);
   if (out.http.auth_token.empty()) out.http.auth_token = get_env_value(http, "auth_token_env");
+  apply_env_override(out.http.host, "WEB_HOST");
+  if (const char* web_port = std::getenv("WEB_PORT")) {
+    if (std::string(web_port).empty() == false) {
+      try {
+        out.http.port = std::stoi(web_port);
+      } catch (...) {
+      }
+    }
+  }
 
   const json storage = root.value("storage", json::object());
   out.storage.path = get_string(storage, "sqlite_path", get_string(storage, "path", out.storage.path));
@@ -198,6 +225,7 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   const json browser_worker = root.value("browser_worker", json::object());
   out.browser_worker.enabled = get_bool(browser_worker, "enabled", out.browser_worker.enabled);
   out.browser_worker.endpoint = get_string(browser_worker, "endpoint", out.browser_worker.endpoint);
+  apply_env_override(out.browser_worker.endpoint, "BROWSER_WORKER_ENDPOINT");
   out.browser_worker.timeout_seconds =
       get_int(browser_worker, "timeout_seconds", out.browser_worker.timeout_seconds);
 

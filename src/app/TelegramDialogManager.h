@@ -26,6 +26,8 @@ private:
   void handle_update(const telegram_update& update);
   void handle_callback(const telegram_update& update);
   void handle_text(const telegram_update& update);
+  bool send_next_answer_prompt(const std::string& chat_id, const std::string& session_id, std::string& err);
+  bool handle_option_answer(const std::string& chat_id, const std::string& session_id, const std::string& payload, std::string& err);
   static bool parse_field_line(const std::string& line, std::string& field_ref, std::string& value);
 
   telegram_config cfg;

@@ -1,4 +1,13 @@
-build/
-data/
 .git/
+build/
+build_*/
+data/
 .env
+config/app.json
+config/profile.json
+config/rules.json
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+.pytest_cache/

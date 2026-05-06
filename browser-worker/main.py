@@ -23,6 +23,7 @@ app = FastAPI(title="Catch the Letter Browser Worker")
 class InspectRequest(BaseModel):
     url: str
     session_id: str | None = None
+    debug: bool = False
 
 
 class FillField(BaseModel):
@@ -110,6 +111,67 @@ def form_type_for(url: str) -> str:
     return "generic_html_form"
 
 
+def infer_virtual_fields_from_text(text: str) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    lines = [re.sub(r"\s+", " ", x).strip() for x in text.splitlines()]
+    lines = [x for x in lines if x and len(x) <= 180]
+    option_pattern = re.compile(r"(^|\s)(5|4|3|2|1)(\s|$)")
+    for idx, line in enumerate(lines[:80]):
+        lower = line.lower()
+        if any(skip in lower for skip in ["отправить", "далее", "submit", "continue", "назад"]):
+            continue
+        field_type = ""
+        options: list[dict[str, str]] = []
+        if any(x in lower for x in ["email", "e-mail", "почта"]):
+            field_type = "email"
+        elif any(x in lower for x in ["телефон", "phone", "mobile"]):
+            field_type = "tel"
+        elif any(x in lower for x in ["комментар", "отзыв", "мнение", "пожел"]):
+            field_type = "textarea"
+        elif any(x in lower for x in ["оцен", "rating", "rate"]) or option_pattern.search(line):
+            field_type = "radio_group"
+            found = re.findall(r"\b[1-5]\b", line)
+            if not found and idx + 1 < len(lines):
+                found = re.findall(r"\b[1-5]\b", lines[idx + 1])
+            options = [{"label": x, "value": x, "selector": "", "id": ""} for x in dict.fromkeys(found or ["5", "4", "3"])]
+        elif any(x in lower for x in ["интерес", "выберите несколько", "checkbox"]):
+            field_type = "checkbox_group"
+        elif any(x in lower for x in ["фио", "имя", "фамилия", "группа", "факультет", "программа", "курс", "кампус"]):
+            field_type = "text"
+        if not field_type:
+            continue
+        key = re.sub(r"[^a-zа-я0-9]+", "_", lower).strip("_")[:40] or f"virtual_{idx}"
+        if key in seen:
+            continue
+        seen.add(key)
+        fields.append({
+            "id": f"virtual_{key}",
+            "selector": "",
+            "label": line,
+            "normalized_label": lower,
+            "type": field_type,
+            "required": False,
+            "options": options,
+            "value": "",
+            "values": [],
+            "semantic_key": "unknown",
+            "mapped_profile_key": "",
+            "confidence": 0.0,
+            "source": "debug",
+            "reason": "inferred from visible text because DOM extraction found no controls",
+            "requires_user_input": True,
+            "can_auto_fill": False,
+            "unsupported_reason": "LLM/text-inferred field has no reliable DOM selector",
+            "validation_error": "",
+            "question_block_text": line,
+            "nearby_text": line,
+        })
+        if len(fields) >= 12:
+            break
+    return fields
+
+
 async def detect_auth_required(page: Page) -> bool:
     url = page.url.lower()
     title = (await page.title()).lower()
@@ -174,7 +236,17 @@ FIELD_SCRIPT = r"""
   function compact(text) {
     return (text || '').replace(/\s+/g, ' ').trim();
   }
+  function normalized(text) {
+    return compact(text).toLowerCase();
+  }
   function nearestQuestion(node) {
+    const rawType = (node.getAttribute('type') || '').toLowerCase();
+    const role = (node.getAttribute('role') || '').toLowerCase();
+    if (rawType === 'radio' || rawType === 'checkbox' || role === 'radio' || role === 'checkbox') {
+      return node.closest('fieldset, [role="radiogroup"], [role="group"], [role="listitem"], .freebirdFormviewerComponentsQuestionBaseRoot, div') || node.parentElement || node;
+    }
+    const label = node.closest('label');
+    if (label) return label;
     return node.closest('fieldset, [role="radiogroup"], [role="group"], [role="listitem"], .freebirdFormviewerComponentsQuestionBaseRoot, form, div') || node.parentElement || node;
   }
   function containerLabel(container, node) {
@@ -216,6 +288,7 @@ FIELD_SCRIPT = r"""
     const tag = node.tagName.toLowerCase();
     const role = node.getAttribute('role');
     const type = (node.getAttribute('type') || '').toLowerCase();
+    if (node.getAttribute('contenteditable') === 'true') return 'text';
     if (tag === 'textarea' || role === 'textbox') return tag === 'textarea' ? 'textarea' : 'text';
     if (tag === 'select') return 'select';
     if (role === 'radio' || type === 'radio') return 'radio';
@@ -254,13 +327,20 @@ FIELD_SCRIPT = r"""
           label: containerLabel(container, node),
           type: groupType,
           required: false,
-          options: []
+          options: [],
+          normalized_label: normalized(containerLabel(container, node)),
+          question_block_text: compact(container.innerText).slice(0, 1000),
+          placeholder: '',
+          aria_label: node.getAttribute('aria-label') || '',
+          nearby_text: compact((node.parentElement && node.parentElement.innerText) || '').slice(0, 500)
         });
       }
       const group = groups.get(groupKey);
       group.required = group.required || Boolean(node.required || node.getAttribute('aria-required') === 'true');
       const label = optionLabel(node) || node.value || node.id || cssPath(node);
-      if (label && !group.options.includes(label)) group.options.push(label);
+      if (label && !group.options.some(opt => opt.label === label || opt.value === node.value)) {
+        group.options.push({label, value: node.value || label, selector: cssPath(node), id: node.id || ''});
+      }
       continue;
     }
     const selector = cssPath(node);
@@ -268,15 +348,22 @@ FIELD_SCRIPT = r"""
     seen.add(selector);
     const id = node.id || node.name || node.getAttribute('aria-label') || selector;
     const options = node.tagName.toLowerCase() === 'select'
-      ? Array.from(node.options).map(o => o.text.trim()).filter(Boolean)
+      ? Array.from(node.options).map(o => ({label: compact(o.text), value: o.value || compact(o.text), selector: selector, id: o.id || ''})).filter(o => o.label || o.value)
       : [];
+    const label = labelFor(node);
+    const container = nearestQuestion(node);
     result.push({
       id,
       selector,
-      label: labelFor(node),
+      label,
+      normalized_label: normalized(label),
       type: fieldType(node),
       required: Boolean(node.required || node.getAttribute('aria-required') === 'true'),
-      options
+      options,
+      placeholder: node.getAttribute('placeholder') || '',
+      aria_label: node.getAttribute('aria-label') || '',
+      nearby_text: compact((node.parentElement && node.parentElement.innerText) || '').slice(0, 500),
+      question_block_text: compact(container.innerText).slice(0, 1000)
     });
   }
   for (const group of groups.values()) {
@@ -320,6 +407,12 @@ async def demo_form() -> Any:
 </form>
 </body></html>
 """)
+
+
+@app.get("/demo-thanks")
+async def demo_thanks() -> Any:
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse("<!doctype html><html><body><h1>Спасибо</h1><p>Form submitted.</p></body></html>")
 
 
 @app.get("/demo-auth-form")
@@ -385,12 +478,69 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
       browser = await playwright.chromium.launch(headless=True)
       context = await browser.new_context()
       page = await context.new_page()
-      await page.goto(req.url, wait_until="networkidle", timeout=60000)
+      await page.goto(req.url, wait_until="domcontentloaded", timeout=60000)
+      try:
+          await page.wait_for_load_state("networkidle", timeout=20000)
+      except Exception:
+          pass
+      for selector in [
+          'input', 'textarea', 'select', '[role="radio"]', '[role="checkbox"]',
+          '[role="textbox"]', '[contenteditable="true"]', 'button'
+      ]:
+          try:
+              await page.locator(selector).first.wait_for(timeout=3000)
+              break
+          except Exception:
+              pass
       auth_required = await detect_auth_required(page)
       shot = await screenshot(page, sid, "inspect")
       fields: list[dict[str, Any]] = []
+      extraction_errors: list[str] = []
+      extraction_strategy_used = "auth_required" if auth_required else "dom_controls"
       if not auth_required:
-          fields = await page.evaluate(FIELD_SCRIPT)
+          for _ in range(3):
+              try:
+                  fields = await page.evaluate(FIELD_SCRIPT)
+              except Exception as exc:
+                  extraction_errors.append(str(exc))
+                  fields = []
+              if fields:
+                  break
+              await page.wait_for_timeout(1000)
+      visible_text = ""
+      try:
+          visible_text = await page.locator("body").inner_text(timeout=3000)
+      except Exception as exc:
+          extraction_errors.append(str(exc))
+      if not auth_required and not fields and visible_text:
+          fields = infer_virtual_fields_from_text(visible_text)
+          if fields:
+              extraction_strategy_used = "visible_text_virtual_fields"
+      debug_info: dict[str, Any] = {}
+      if req.debug:
+          async def count(selector: str) -> int:
+              try:
+                  return await page.locator(selector).count()
+              except Exception:
+                  return 0
+          debug_info = {
+              "page_title": await page.title(),
+              "final_url": page.url,
+              "visible_text_sample": visible_text[:2000],
+              "input_count": await count('input:not([type="hidden"])'),
+              "textarea_count": await count('textarea'),
+              "select_count": await count('select'),
+              "role_radio_count": await count('[role="radio"], input[type="radio"]'),
+              "role_checkbox_count": await count('[role="checkbox"], input[type="checkbox"]'),
+              "button_count": await count('button, [role="button"], input[type="submit"]'),
+              "candidate_question_blocks": len(fields),
+              "extraction_strategy_used": extraction_strategy_used,
+              "extraction_errors": extraction_errors,
+              "form_type": form_type_for(page.url or req.url),
+              "auth_required": auth_required,
+              "screenshot_path": shot,
+              "error": "" if fields or auth_required else "no interactive form fields found",
+          }
       sessions[sid] = {
           "playwright": playwright,
           "browser": browser,
@@ -409,7 +559,8 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
           "auth_required": auth_required,
           "fields": fields,
           "screenshot_path": shot,
-          "error": "",
+          "debug": debug_info,
+          "error": "" if fields or auth_required else "no interactive form fields found",
       }
     except Exception as exc:
       return {"ok": False, "session_id": sid, "url": req.url, "fields": [], "error": str(exc)}
@@ -447,7 +598,10 @@ async def fill_one(page: Page, field: FillField) -> None:
                 label = ""
             raw = ((await opt.get_attribute("value")) or "").strip().lower()
             if label.strip().lower() == target or raw == target or target in label.strip().lower():
-                await opt.check(force=True)
+                try:
+                    await opt.check(force=True)
+                except Exception:
+                    await opt.click(force=True)
                 return
         raise RuntimeError("radio option not found")
     if checkbox_count and tag != "input":
@@ -471,7 +625,10 @@ async def fill_one(page: Page, field: FillField) -> None:
             raw = ((await opt.get_attribute("value")) or "").strip().lower()
             hay = label.strip().lower()
             if any(v == raw or v == hay or v in hay for v in values):
-                await opt.check(force=True)
+                try:
+                    await opt.check(force=True)
+                except Exception:
+                    await opt.click(force=True)
         return
     if tag == "select":
         try:
@@ -487,14 +644,37 @@ async def fill_one(page: Page, field: FillField) -> None:
         return
     if typ == "file":
         raise RuntimeError("file upload requires manual handling")
+    try:
+        contenteditable = await loc.get_attribute("contenteditable")
+    except Exception:
+        contenteditable = None
+    if contenteditable == "true":
+        await loc.evaluate(
+            """(el, value) => {
+                el.textContent = value;
+                el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: value}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""",
+            value,
+        )
+        return
     if typ in {"checkbox"} or role == "checkbox":
         if value.lower() in {"1", "true", "yes", "да", "on"}:
-            await loc.check(force=True)
+            try:
+                await loc.check(force=True)
+            except Exception:
+                await loc.click(force=True)
         else:
-            await loc.uncheck(force=True)
+            try:
+                await loc.uncheck(force=True)
+            except Exception:
+                pass
         return
     if typ == "radio" or role == "radio":
-        await loc.check(force=True)
+        try:
+            await loc.check(force=True)
+        except Exception:
+            await loc.click(force=True)
         return
     await loc.fill(value)
 

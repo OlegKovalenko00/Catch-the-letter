@@ -9,6 +9,8 @@
 #include "infra/TelegramNotifier.h"
 #include "infra/TwilioNotifier.h"
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -107,6 +109,30 @@ static void ensure_parent_dir(const std::string& path) {
   if (!parent.empty()) std::filesystem::create_directories(parent, ec);
 }
 
+static bool starts_with(const std::string& text, const std::string& prefix) {
+  return text.rfind(prefix, 0) == 0;
+}
+
+static void localize_example_paths(app_config& cfg, const std::string& config_path) {
+  std::filesystem::path path(config_path);
+  if (path.is_absolute()) return;
+  auto localize = [](std::string& value) {
+    if (starts_with(value, "/app/config/")) value = "config/" + value.substr(std::string("/app/config/").size());
+    if (starts_with(value, "/app/data/")) value = "data/" + value.substr(std::string("/app/data/").size());
+  };
+  localize(cfg.profile_file);
+  localize(cfg.rules_file);
+  localize(cfg.storage.path);
+  const char* browser_override = std::getenv("BROWSER_WORKER_ENDPOINT");
+  if (!browser_override && cfg.browser_worker.endpoint == "http://browser-worker:8090") {
+    cfg.browser_worker.endpoint = "http://127.0.0.1:8090";
+  }
+  const char* llm_override = std::getenv("OLLAMA_ENDPOINT");
+  if (!llm_override && cfg.llm.endpoint == "http://ollama:11434/api/chat") {
+    cfg.llm.endpoint = "http://127.0.0.1:11434/api/chat";
+  }
+}
+
 int main(int argc, char** argv) {
   std::string config_path = "config/app.json";
   bool demo = false;
@@ -114,8 +140,11 @@ int main(int argc, char** argv) {
   bool once = false;
   bool test_config = false;
   bool test_browser = false;
+  bool test_imap = false;
   bool test_llm = false;
   bool test_telegram = false;
+  std::string inspect_form_url;
+  std::string create_form_session_url;
   int events_limit_override = 0;
   std::string log_level_override;
 
@@ -143,13 +172,20 @@ int main(int argc, char** argv) {
       test_config = true;
     } else if (arg == "--test-browser") {
       test_browser = true;
+    } else if (arg == "--test-imap") {
+      test_imap = true;
     } else if (arg == "--test-llm") {
       test_llm = true;
     } else if (arg == "--test-telegram") {
       test_telegram = true;
+    } else if (arg == "--inspect-form-url" && i + 1 < argc) {
+      inspect_form_url = argv[++i];
+    } else if (arg == "--create-form-session-url" && i + 1 < argc) {
+      create_form_session_url = argv[++i];
     } else if (arg == "--help") {
       std::cout << "Usage: catch_the_letter --config <path> [--once] [--demo] [--demo-auth] "
-                   "[--test-config] [--test-browser] [--test-llm] [--test-telegram] "
+                   "[--test-config] [--test-browser] [--test-imap] [--test-llm] [--test-telegram] "
+                   "[--inspect-form-url URL] [--create-form-session-url URL] "
                    "[--events-limit N] [--log-level LEVEL]"
                 << std::endl;
       return 0;
@@ -197,44 +233,58 @@ int main(int argc, char** argv) {
   }
   if (events_limit_override > 0) cfg.events_limit = events_limit_override;
   if (!log_level_override.empty()) cfg.log_level = log_level_override;
+  localize_example_paths(cfg, config_path);
 
   if (test_config) {
     std::cout << "config ok" << std::endl;
     return 0;
   }
 
-  if (test_browser) {
-    browser_worker_client browser(cfg.browser_worker);
-    if (browser.health(err)) {
-      std::cout << "browser-worker ok" << std::endl;
-      return 0;
-    }
-    std::cerr << "browser-worker error: " << err << std::endl;
-    return 1;
-  }
-
-  if (test_llm) {
-    std::unique_ptr<llm_client> llm = cfg.llm.enabled ? make_ollama_client(cfg.llm) : make_noop_llm_client();
-    message msg;
-    msg.subject = "Important form";
-    msg.body_text = "Please fill this form";
-    auto analysis = llm->analyze_email(msg);
-    std::cout << "llm test kind=" << static_cast<int>(analysis.kind) << std::endl;
-    return 0;
-  }
-
-  if (test_telegram) {
-    telegram_bot bot(cfg.telegram);
-    if (!bot.enabled()) {
-      std::cerr << "telegram disabled or incomplete" << std::endl;
+  if (test_browser || test_imap || test_llm || test_telegram ||
+      !inspect_form_url.empty() || !create_form_session_url.empty()) {
+    ensure_parent_dir(cfg.storage.path);
+    std::unique_ptr<storage> store(make_sqlite_storage(cfg.storage.path, &err));
+    if (!store) {
+      std::cerr << "storage error: " << err << std::endl;
       return 1;
     }
-    if (bot.send_message("Catch the Letter: test message", err)) {
-      std::cout << "telegram ok" << std::endl;
-      return 0;
+    app application(cfg, std::unique_ptr<mail_client>{}, nullptr, std::move(store), nullptr);
+    std::string out;
+    if (test_browser) {
+      out = application.test_browser_json();
+    } else if (test_imap) {
+      out = application.test_imap_json();
+    } else if (test_llm) {
+      out = application.test_llm_json();
+    } else if (test_telegram) {
+      out = application.test_telegram_json();
+    } else if (!inspect_form_url.empty()) {
+      out = application.inspect_form_url_json(nlohmann::json({{"url", inspect_form_url}, {"debug", true}}).dump());
+    } else {
+      out = application.create_form_session_from_url_json(
+          nlohmann::json({{"url", create_form_session_url}, {"title", "Manual CLI form"}, {"debug", true}}).dump());
     }
-    std::cerr << "telegram error: " << err << std::endl;
-    return 1;
+    std::cout << out << std::endl;
+    try {
+      auto parsed = nlohmann::json::parse(out);
+      if (parsed.value("ok", false)) return 0;
+      if (test_imap && parsed.contains("mailboxes") && parsed["mailboxes"].is_array()) {
+        bool has_mailbox = false;
+        bool all_skipped = true;
+        for (const auto& mailbox : parsed["mailboxes"]) {
+          has_mailbox = true;
+          all_skipped = all_skipped && mailbox.value("skipped", false);
+        }
+        if (has_mailbox && all_skipped) return 0;
+      }
+      if (test_telegram &&
+          (!parsed.value("token_configured", true) || !parsed.value("chat_id_configured", true))) {
+        return 0;
+      }
+      return 1;
+    } catch (...) {
+      return 1;
+    }
   }
 
   ensure_parent_dir(cfg.storage.path);
@@ -269,6 +319,7 @@ int main(int argc, char** argv) {
   if (cfg.http.enabled) {
     http_handlers handlers;
     handlers.get_status_json = [&application]() { return application.status_json(); };
+    handlers.get_dashboard_json = [&application]() { return application.status_json(); };
     handlers.get_events_json = [&application](int limit) { return application.events_json(limit); };
     handlers.get_rules_json = [&application]() { return application.rules_json(); };
     handlers.set_rules_json = [&application](const std::string& text, std::string& e) {
@@ -306,8 +357,24 @@ int main(int argc, char** argv) {
     };
     handlers.get_config_json = [&application]() { return application.config_json(); };
     handlers.test_browser_json = [&application]() { return application.test_browser_json(); };
+    handlers.test_imap_json = [&application]() { return application.test_imap_json(); };
     handlers.test_llm_json = [&application]() { return application.test_llm_json(); };
     handlers.test_telegram_json = [&application]() { return application.test_telegram_json(); };
+    handlers.inspect_form_url_json = [&application](const std::string& body) {
+      return application.inspect_form_url_json(body);
+    };
+    handlers.create_form_session_from_url_json = [&application](const std::string& body) {
+      return application.create_form_session_from_url_json(body);
+    };
+    handlers.remap_form_json = [&application](const std::string& id, const std::string& body) {
+      return application.remap_form_json(id, body);
+    };
+    handlers.explain_form_field_json = [&application](const std::string& id, const std::string& body) {
+      return application.explain_form_field_json(id, body);
+    };
+    handlers.validate_form_json = [&application](const std::string& id) {
+      return application.validate_form_json(id);
+    };
     handlers.create_demo_form = [&application](bool auth_demo, std::string& e) {
       return application.create_demo_form(auth_demo, e);
     };

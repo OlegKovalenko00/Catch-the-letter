@@ -27,17 +27,48 @@ form_field parse_field(const json& item) {
   field.id = item.value("id", "");
   field.selector = item.value("selector", "");
   field.label = item.value("label", "");
+  field.normalized_label = item.value("normalized_label", "");
   field.type = item.value("type", "unknown");
   field.required = item.value("required", false);
   if (item.contains("options") && item["options"].is_array()) {
     for (const auto& opt : item["options"]) {
-      if (opt.is_string()) field.options.push_back(opt.get<std::string>());
+      field_option option;
+      if (opt.is_string()) {
+        option.label = opt.get<std::string>();
+        option.value = option.label;
+      } else if (opt.is_object()) {
+        option.label = opt.value("label", "");
+        option.value = opt.value("value", option.label);
+        option.selector = opt.value("selector", "");
+        option.id = opt.value("id", "");
+      }
+      if (!option.label.empty() || !option.value.empty()) field.options.push_back(std::move(option));
     }
   }
   field.value = item.value("value", "");
+  if (item.contains("values") && item["values"].is_array()) {
+    for (const auto& value : item["values"]) {
+      if (value.is_string()) field.values.push_back(value.get<std::string>());
+    }
+  }
+  field.semantic_key = item.value("semantic_key", "");
   field.mapped_profile_key = item.value("mapped_profile_key", "");
+  field.suggested_value = item.value("suggested_value", "");
+  field.option_value = item.value("option_value", "");
   field.confidence = item.value("confidence", 0.0);
+  field.source = item.value("source", "");
+  field.reason = item.value("reason", "");
+  field.risk = item.value("risk", "");
   field.requires_user_input = item.value("requires_user_input", false);
+  field.can_auto_fill = item.value("can_auto_fill", true);
+  field.unsupported_reason = item.value("unsupported_reason", "");
+  field.user_modified = item.value("user_modified", false);
+  field.validation_error = item.value("validation_error", "");
+  field.question_block_text = item.value("question_block_text", "");
+  field.placeholder = item.value("placeholder", "");
+  field.aria_label = item.value("aria_label", "");
+  field.nearby_text = item.value("nearby_text", "");
+  field.yandex_question_id = item.value("yandex_question_id", "");
   return field;
 }
 
@@ -167,9 +198,10 @@ bool browser_worker_client::health(std::string& err) const {
 }
 
 std::optional<form_snapshot> browser_worker_client::inspect_form(const std::string& url,
-                                                                 std::string& err) const {
+                                                                 std::string& err,
+                                                                 bool debug) const {
   json response;
-  if (!post_json("/inspect-form", {{"url", url}, {"session_id", nullptr}}, response, err)) {
+  if (!post_json("/inspect-form", {{"url", url}, {"session_id", nullptr}, {"debug", debug}}, response, err)) {
     return std::nullopt;
   }
 
@@ -181,6 +213,7 @@ std::optional<form_snapshot> browser_worker_client::inspect_form(const std::stri
   snapshot.form_type = response.value("form_type", "unknown");
   snapshot.auth_required = response.value("auth_required", false);
   snapshot.screenshot_path = response.value("screenshot_path", "");
+  if (response.contains("debug")) snapshot.debug_json = response["debug"].dump();
   if (response.contains("fields") && response["fields"].is_array()) {
     for (const auto& item : response["fields"]) snapshot.fields.push_back(parse_field(item));
   }
@@ -194,11 +227,19 @@ bool browser_worker_client::fill_form(const std::string& browser_session_id,
   req["session_id"] = browser_session_id;
   req["fields"] = json::array();
   for (const auto& field : fields) {
-    if (field.value.empty()) continue;
+    if (!field.can_auto_fill) continue;
+    std::string value = field.value;
+    if (value.empty() && !field.values.empty()) {
+      for (size_t i = 0; i < field.values.size(); ++i) {
+        if (i) value += ";";
+        value += field.values[i];
+      }
+    }
+    if (value.empty()) continue;
     req["fields"].push_back({
         {"id", field.id},
         {"selector", field.selector},
-        {"value", field.value}
+        {"value", value}
     });
   }
 
@@ -280,6 +321,7 @@ std::optional<form_snapshot> browser_worker_client::reinspect_form(const std::st
   snapshot.form_type = response.value("form_type", "unknown");
   snapshot.auth_required = response.value("auth_required", false);
   snapshot.screenshot_path = response.value("screenshot_path", "");
+  if (response.contains("debug")) snapshot.debug_json = response["debug"].dump();
   if (response.contains("fields") && response["fields"].is_array()) {
     for (const auto& item : response["fields"]) snapshot.fields.push_back(parse_field(item));
   }

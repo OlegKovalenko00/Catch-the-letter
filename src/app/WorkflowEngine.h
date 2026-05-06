@@ -49,6 +49,7 @@ public:
                           const std::string& field_ref,
                           const std::string& value,
                           std::string& err);
+  bool remap_form_fields(const std::string& session_id, bool force, std::string& err);
   bool send_form_review(const form_session& session, std::string& err);
   bool send_submit_confirmation(const form_session& session, std::string& err);
   bool notify_text(const std::string& text, std::string& err);
@@ -69,7 +70,7 @@ private:
   bool start_form_workflow(const message& msg, const email_analysis& analysis, std::string& status);
   void notify_important(const message& msg, const email_analysis& analysis);
   void notify_manual(const std::string& text);
-  std::optional<link> choose_form_link(const message& msg, const email_analysis& analysis) const;
+  std::optional<message_link> choose_form_link(const message& msg, const email_analysis& analysis) const;
 
   app_config cfg;
   storage& store;

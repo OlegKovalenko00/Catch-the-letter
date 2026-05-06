@@ -1,9 +1,12 @@
 #include "WorkflowEngine.h"
 
+#include "FormUnderstandingEngine.h"
+
 #include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <utility>
 
@@ -106,7 +109,9 @@ bool workflow_engine::notify_text(const std::string& text, std::string& err) {
 void workflow_engine::notify_manual(const std::string& text) {
   std::string err;
   if (!notify_text(text, err)) {
-    append_event("error", "notification_failed", "Notification failed", {{"error", err}});
+    json data = json::object();
+    data["error"] = err;
+    append_event("error", "notification_failed", "Notification failed", data);
   }
 }
 
@@ -118,13 +123,13 @@ void workflow_engine::notify_important(const message& msg, const email_analysis&
   notify_manual(ss.str());
 }
 
-std::optional<link> workflow_engine::choose_form_link(const message& msg,
-                                                      const email_analysis& analysis) const {
+std::optional<message_link> workflow_engine::choose_form_link(const message& msg,
+                                                              const email_analysis& analysis) const {
   if (!analysis.form_links.empty()) {
     auto best = std::max_element(
         analysis.form_links.begin(),
         analysis.form_links.end(),
-        [](const link& a, const link& b) { return a.confidence < b.confidence; }
+        [](const message_link& a, const message_link& b) { return a.confidence < b.confidence; }
     );
     return *best;
   }
@@ -132,7 +137,7 @@ std::optional<link> workflow_engine::choose_form_link(const message& msg,
     auto best = std::max_element(
         msg.links.begin(),
         msg.links.end(),
-        [](const link& a, const link& b) { return a.confidence < b.confidence; }
+        [](const message_link& a, const message_link& b) { return a.confidence < b.confidence; }
     );
     return *best;
   }
@@ -144,13 +149,21 @@ workflow_result workflow_engine::handle_message(const message& msg, const std::v
   auto match = rules_engine.apply(msg, rules);
   if (!match.matched) {
     store.mark_processed(msg, "ignored");
-    append_event("info", "message_ignored", msg.subject, {{"uid", msg.uid}, {"mailbox_id", msg.mailbox_id}});
+    json data = json::object();
+    data["uid"] = msg.uid;
+    data["mailbox_id"] = msg.mailbox_id;
+    append_event("info", "message_ignored", msg.subject, data);
     out.status = "ignored";
     return out;
   }
 
   out.matched = true;
-  append_event("info", "message_matched", msg.subject, {{"uid", msg.uid}, {"mailbox_id", msg.mailbox_id}});
+  {
+    json data = json::object();
+    data["uid"] = msg.uid;
+    data["mailbox_id"] = msg.mailbox_id;
+    append_event("info", "message_matched", msg.subject, data);
+  }
   email_analysis analysis = classifier.analyze_email(msg);
   bool wants_classification = has_action(match, "classify");
   bool wants_form_detection = has_action(match, "detect_form");
@@ -170,8 +183,10 @@ workflow_result workflow_engine::handle_message(const message& msg, const std::v
   }
 
   if (wants_form_detection && !confident_form_link) {
-    append_event("info", "form_detection_no_link", "No confident form link found",
-                 {{"uid", msg.uid}, {"mailbox_id", msg.mailbox_id}});
+    json data = json::object();
+    data["uid"] = msg.uid;
+    data["mailbox_id"] = msg.mailbox_id;
+    append_event("info", "form_detection_no_link", "No confident form link found", data);
   }
 
   if (analysis.kind == message_kind::important_notification || wants_notify || wants_classification) {
@@ -188,7 +203,9 @@ workflow_result workflow_engine::handle_message(const message& msg, const std::v
       if (action.channel == "telegram" && notify_text(text, err)) {
         sent_any = true;
       } else if (!err.empty()) {
-        append_event("error", "notification_failed", "Notification failed", {{"error", err}});
+        json data = json::object();
+        data["error"] = err;
+        append_event("error", "notification_failed", "Notification failed", data);
       }
     }
     if (!sent_any) notify_important(msg, analysis);
@@ -209,7 +226,9 @@ bool workflow_engine::start_form_workflow(const message& msg,
   auto chosen = choose_form_link(msg, analysis);
   if (!chosen.has_value()) {
     notify_important(msg, analysis);
-    append_event("info", "form_detection_no_link", "No form link found", {{"uid", msg.uid}});
+    json data = json::object();
+    data["uid"] = msg.uid;
+    append_event("info", "form_detection_no_link", "No form link found", data);
     status = "important_notified";
     return false;
   }
@@ -224,14 +243,21 @@ bool workflow_engine::start_form_workflow(const message& msg,
     session.title = msg.subject;
     std::string id = store.create_form_session(session);
     notify_manual("Форма найдена, но paranoid mode требует ручного открытия:\n" + chosen->url);
-    append_event("info", "paranoid_manual_required", "Paranoid mode manual required",
-                 {{"session_id", id}});
+    {
+      json data = json::object();
+      data["session_id"] = id;
+      append_event("info", "paranoid_manual_required", "Paranoid mode manual required", data);
+    }
     status = "manual_required";
     return false;
   }
 
-  append_event("info", "form_detected", "Form link detected",
-               {{"url", sanitize_url_for_log(chosen->url)}, {"uid", msg.uid}});
+  {
+    json data = json::object();
+    data["url"] = sanitize_url_for_log(chosen->url);
+    data["uid"] = msg.uid;
+    append_event("info", "form_detected", "Form link detected", data);
+  }
 
   std::string reason;
   if (!is_allowed_url(chosen->url, cfg.security, reason)) {
@@ -244,7 +270,11 @@ bool workflow_engine::start_form_workflow(const message& msg,
     session.title = msg.subject;
     store.create_form_session(session);
     notify_manual("Ссылка формы заблокирована политикой безопасности: " + reason + "\n\n" + chosen->url);
-    append_event("warning", "url_blocked", reason, {{"url", sanitize_url_for_log(chosen->url)}});
+    {
+      json data = json::object();
+      data["url"] = sanitize_url_for_log(chosen->url);
+      append_event("warning", "url_blocked", reason, data);
+    }
     status = "manual_required";
     return false;
   }
@@ -257,17 +287,21 @@ bool workflow_engine::start_form_workflow(const message& msg,
     session.message_uid = msg.uid;
     session.status = "manual_required";
     session.form_url = chosen->url;
-    session.form_type = "unknown";
-    session.title = msg.subject;
-    store.create_form_session(session);
-    notify_manual("Не удалось открыть форму автоматически. Заполните вручную:\n" + chosen->url);
-    append_event("error", "browser_worker_unavailable", err, {{"url", sanitize_url_for_log(chosen->url)}});
+    {
+      json data = json::object();
+      data["url"] = sanitize_url_for_log(chosen->url);
+      append_event("error", "browser_worker_unavailable", err, data);
+    }
     status = "manual_required";
     return false;
   }
 
-  append_event("info", "form_inspected", "Form inspected",
-               {{"url", sanitize_url_for_log(chosen->url)}, {"form_type", snapshot->form_type}});
+  {
+    json data = json::object();
+    data["url"] = sanitize_url_for_log(chosen->url);
+    data["form_type"] = snapshot->form_type;
+    append_event("info", "form_inspected", "Form inspected", data);
+  }
 
   form_session session;
   session.mailbox_id = msg.mailbox_id;
@@ -279,7 +313,12 @@ bool workflow_engine::start_form_workflow(const message& msg,
 
   if (snapshot->auth_required) {
     session.status = "waiting_auth";
-    session.auth_state_json = json({{"state", "required"}, {"url", snapshot->final_url}}).dump();
+    {
+      json auth_state = json::object();
+      auth_state["state"] = "required";
+      auth_state["url"] = snapshot->final_url;
+      session.auth_state_json = auth_state.dump();
+    }
     std::string id = store.create_form_session(session);
     std::ostringstream ss;
     ss << "Форма требует авторизацию.\n\nПисьмо: " << msg.subject << "\nСайт: " << chosen->domain
@@ -292,15 +331,35 @@ bool workflow_engine::start_form_workflow(const message& msg,
       };
       std::string send_err;
       if (!telegram->send_message(ss.str(), buttons, send_err)) {
-        append_event("error", "notification_failed", "Notification failed", {{"error", send_err}});
+        json data = json::object();
+        data["error"] = send_err;
+        append_event("error", "notification_failed", "Notification failed", data);
       }
     } else {
       notify_manual(ss.str());
     }
-    append_event("info", "waiting_auth", "Form requires auth",
-                 {{"session_id", id}, {"url", sanitize_url_for_log(chosen->url)}});
+    {
+      json data = json::object();
+      data["session_id"] = id;
+      data["url"] = sanitize_url_for_log(chosen->url);
+      append_event("info", "waiting_auth", "Form requires auth", data);
+    }
     status = "form_waiting_auth";
     return true;
+  }
+
+  if (snapshot->fields.empty()) {
+    session.status = "manual_required";
+    std::string id = store.create_form_session(session);
+    notify_manual("Не удалось найти поля формы автоматически. Откройте вручную:\n" + chosen->url);
+    {
+      json data = json::object();
+      data["session_id"] = id;
+      data["url"] = sanitize_url_for_log(chosen->url);
+      append_event("warning", "form_fields_not_found", "No interactive form fields found", data);
+    }
+    status = "manual_required";
+    return false;
   }
 
   session.status = "waiting_user_review";
@@ -309,17 +368,34 @@ bool workflow_engine::start_form_workflow(const message& msg,
   session.fields = mapped.fields;
   std::string id = store.create_form_session(session);
   auto saved = store.get_form_session(id);
+  {
+    json data = json::object();
+    data["session_id"] = id;
+    append_event("info", "form_waiting_user", "Form session created", data);
+  }
   if (saved) {
     send_form_review(*saved, err);
   }
-  append_event("info", "form_waiting_user", "Form session created", {{"session_id", id}});
   status = "form_waiting_user";
   return true;
 }
 
 bool workflow_engine::send_form_review(const form_session& session, std::string& err) {
   std::ostringstream ss;
-  ss << "Найдена форма\n\nПисьмо:\n" << session.title << "\n\nСайт:\n" << session.form_url << "\n\n";
+  int filled = 0;
+  int needs_input = 0;
+  int missing_required = 0;
+  for (const auto& field : session.fields) {
+    if (!field.value.empty() || !field.values.empty()) filled++;
+    if (field.requires_user_input) needs_input++;
+    if (field.required && field.value.empty() && field.values.empty()) missing_required++;
+  }
+  ss << "Найдена форма: " << session.title << "\n\n"
+     << "Тип: " << (session.form_type.empty() ? "unknown" : session.form_type) << "\n"
+     << "Автозаполнено: " << filled << "\n"
+     << "Нужно ответить: " << needs_input << "\n"
+     << "Обязательных пустых: " << missing_required << "\n\n"
+     << "Ссылка: " << session.form_url << "\n\n";
 
   ss << "Предложенные значения:\n";
   int index = 1;
@@ -347,11 +423,17 @@ bool workflow_engine::send_form_review(const form_session& session, std::string&
   }
   if (!any_unknown) ss << "нет\n";
 
-  ss << "\nЧтобы изменить, отправьте:\n3: значение\nили\nfield_id: значение";
+  ss << "\nЧто дальше:\n"
+     << "1. Нажмите `Ответить здесь`, если нужно дополнить значения в Telegram.\n"
+     << "2. Нажмите `Заполнить форму`, когда поля готовы.\n"
+     << "3. Отправка будет отдельным подтверждением после заполнения.\n\n"
+     << "Формат ответа:\n1: значение\nfield_id: значение";
 
   std::vector<std::vector<telegram_button>> buttons = {
-      {{"Заполнить форму", "form:" + session.id + ":fill"}},
-      {{"Изменить поля", "form:" + session.id + ":edit"}, {"Открыть самому", "form:" + session.id + ":manual"}}
+      {{"Открыть Web UI", "form:" + session.id + ":open"}, {"Ответить здесь", "form:" + session.id + ":edit"}},
+      {{"Remap", "form:" + session.id + ":remap"}, {"Заполнить форму", "form:" + session.id + ":fill"}},
+      {{"Отложить", "form:" + session.id + ":defer"}},
+      {{"Вручную", "form:" + session.id + ":manual"}, {"Отмена", "form:" + session.id + ":cancel"}}
   };
 
   if (telegram && telegram->enabled()) return telegram->send_message(ss.str(), buttons, err);
@@ -361,9 +443,11 @@ bool workflow_engine::send_form_review(const form_session& session, std::string&
 }
 
 bool workflow_engine::send_submit_confirmation(const form_session& session, std::string& err) {
-  std::string text = "Форма заполнена. Отправить?\n\n" + session.title + "\n" + session.form_url;
+  std::string text = "Форма заполнена, но ещё не отправлена.\n\n"
+      "Проверьте результат в Web UI или подтвердите отправку здесь.\n\n" +
+      session.title + "\n" + session.form_url;
   std::vector<std::vector<telegram_button>> buttons = {
-      {{"Отправить", "form:" + session.id + ":submit"}},
+      {{"Отправить", "form:" + session.id + ":submit"}, {"Проверить в Web UI", "form:" + session.id + ":open"}},
       {{"Открыть самому", "form:" + session.id + ":manual"}, {"Отмена", "form:" + session.id + ":cancel"}}
   };
   if (telegram && telegram->enabled()) return telegram->send_message(text, buttons, err);
@@ -378,7 +462,9 @@ bool workflow_engine::create_demo_session(const std::string& url,
                                           std::string& err) {
   auto snapshot = browser.inspect_form(url, err);
   if (!snapshot.has_value()) {
-    append_event("error", "browser_worker_unavailable", err, {{"url", sanitize_url_for_log(url)}});
+    json data = json::object();
+    data["url"] = sanitize_url_for_log(url);
+    append_event("error", "browser_worker_unavailable", err, data);
     return false;
   }
 
@@ -400,9 +486,18 @@ bool workflow_engine::create_demo_session(const std::string& url,
 
   if (snapshot->auth_required) {
     session.status = "waiting_auth";
-    session.auth_state_json = json({{"state", "required"}, {"url", snapshot->final_url}}).dump();
+    {
+      json auth_state = json::object();
+      auth_state["state"] = "required";
+      auth_state["url"] = snapshot->final_url;
+      session.auth_state_json = auth_state.dump();
+    }
     std::string id = store.create_form_session(session);
-    append_event("info", "waiting_auth", "Demo auth form created", {{"session_id", id}});
+    {
+      json data = json::object();
+      data["session_id"] = id;
+      append_event("info", "waiting_auth", "Demo auth form created", data);
+    }
     err.clear();
     return true;
   }
@@ -410,7 +505,11 @@ bool workflow_engine::create_demo_session(const std::string& url,
   session.status = "waiting_user_review";
   session.fields = llm.map_fields(msg, *snapshot, profile);
   std::string id = store.create_form_session(session);
-  append_event("info", "form_waiting_user", "Demo form session created", {{"session_id", id}});
+  {
+    json data = json::object();
+    data["session_id"] = id;
+    append_event("info", "form_waiting_user", "Demo form session created", data);
+  }
   err.clear();
   return true;
 }
@@ -426,29 +525,42 @@ bool workflow_engine::fill_form_after_review(const std::string& session_id, std:
     mark_manual_required(session_id, err);
     return false;
   }
-  for (const auto& field : session->fields) {
-    if (field.required && field.value.empty()) {
+  auto validation = validate_understood_fields(session->fields);
+  if (!validation.can_fill) {
+    if (!validation.missing_required.empty()) {
       err = "not all required fields are filled";
       notify_manual("Не все обязательные поля заполнены. Проверьте форму перед заполнением.");
-      return false;
+    } else if (!validation.unsupported_required.empty()) {
+      err = validation.unsupported_required.front().error;
+      notify_manual("Обязательное поле нельзя заполнить автоматически. Откройте форму вручную.");
+    } else if (!validation.invalid_options.empty()) {
+      err = validation.invalid_options.front().error;
+      notify_manual("В одном из полей есть ошибка значения. Проверьте форму перед заполнением.");
+    } else {
+      err = "form validation failed";
+      notify_manual("Форма не прошла проверку перед заполнением.");
     }
-    if (field.requires_user_input && field.value.empty()) {
-      err = "field requires user input";
-      notify_manual("Некоторые поля требуют ручного ввода. Проверьте форму перед заполнением.");
-      return false;
-    }
+    return false;
   }
   if (!browser.fill_form(session->browser_session_id, session->fields, err)) {
     session->status = "manual_required";
     store.update_form_session(*session);
     notify_manual("Не удалось заполнить форму автоматически. Откройте вручную:\n" + session->form_url);
-    append_event("error", "form_fill_failed", err, {{"session_id", session_id}});
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("error", "form_fill_failed", err, data);
+    }
     return false;
   }
   session->status = "waiting_submit_confirm";
   store.update_form_session(*session);
   send_submit_confirmation(*session, err);
-  append_event("info", "form_filled", "Form filled", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "form_filled", "Form filled", data);
+  }
   return true;
 }
 
@@ -471,20 +583,32 @@ bool workflow_engine::submit_form_after_confirm(const std::string& session_id, s
     session->status = "waiting_user_review";
     store.update_form_session(*session);
     send_form_review(*session, err);
-    append_event("info", "form_needs_next", "Multipage form has additional fields", {{"session_id", session_id}});
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("info", "form_needs_next", "Multipage form has additional fields", data);
+    }
     err.clear();
     return true;
   }
   if (!submit.ok || !submit.submitted) {
     store.update_form_session_status(session_id, "failed");
-    append_event("error", "form_submit_failed", err.empty() ? submit.error : err, {{"session_id", session_id}});
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("error", "form_submit_failed", err.empty() ? submit.error : err, data);
+    }
     return false;
   }
   store.update_form_session_status(session_id, "submitted");
   std::string close_err;
   browser.close_session(session->browser_session_id, close_err);
   notify_manual("Форма отправлена.\n\n" + session->title);
-  append_event("info", "form_submitted", "Form submitted", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "form_submitted", "Form submitted", data);
+  }
   return true;
 }
 
@@ -498,7 +622,11 @@ bool workflow_engine::mark_manual_required(const std::string& session_id, std::s
   std::string close_err;
   if (!session->browser_session_id.empty()) browser.close_session(session->browser_session_id, close_err);
   notify_manual("Откройте форму вручную:\n" + session->form_url);
-  append_event("info", "form_manual_required", "Form marked manual", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "form_manual_required", "Form marked manual", data);
+  }
   err.clear();
   return true;
 }
@@ -513,7 +641,11 @@ bool workflow_engine::cancel_form(const std::string& session_id, std::string& er
   std::string close_err;
   if (!session->browser_session_id.empty()) browser.close_session(session->browser_session_id, close_err);
   notify_manual("Работа с формой отменена.\n\n" + session->title);
-  append_event("info", "form_cancelled", "Form cancelled", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "form_cancelled", "Form cancelled", data);
+  }
   err.clear();
   return true;
 }
@@ -526,11 +658,19 @@ bool workflow_engine::reinspect_after_auth(const std::string& session_id, std::s
   }
   auto snapshot = browser.reinspect_form(session->browser_session_id, err);
   if (!snapshot) {
-    append_event("error", "auth_reinspect_failed", err, {{"session_id", session_id}});
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("error", "auth_reinspect_failed", err, data);
+    }
     return false;
   }
   if (snapshot->auth_required) {
-    append_event("info", "auth_still_required", "Auth is still required", {{"session_id", session_id}});
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("info", "auth_still_required", "Auth is still required", data);
+    }
     err = "auth is still required";
     return false;
   }
@@ -541,7 +681,11 @@ bool workflow_engine::reinspect_after_auth(const std::string& session_id, std::s
   session->fields = llm.map_fields(message{}, *snapshot, profile);
   store.update_form_session(*session);
   send_form_review(*session, err);
-  append_event("info", "auth_reinspect", "Form reinspected after auth", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "auth_reinspect", "Form reinspected after auth", data);
+  }
   err.clear();
   return true;
 }
@@ -582,12 +726,20 @@ bool workflow_engine::submit_auth_credentials(const std::string& session_id,
       store.save_telegram_dialog(dialog);
     }
     notify_manual("Нужен одноразовый код 2FA. Введите его в Web UI или отправьте в Telegram, если это включено.");
-    append_event("info", "waiting_2fa", "Waiting for 2FA", {{"session_id", session_id}});
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("info", "waiting_2fa", "Waiting for 2FA", data);
+    }
     err.clear();
     return true;
   }
   store.update_form_session_status(session_id, "waiting_auth");
-  append_event("warning", "auth_failed", "Auth failed", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("warning", "auth_failed", "Auth failed", data);
+  }
   if (err.empty()) err = "auth failed";
   return false;
 }
@@ -608,7 +760,11 @@ bool workflow_engine::submit_two_factor_code(const std::string& session_id,
   if (status == "authenticated") {
     return reinspect_after_auth(session_id, err);
   }
-  append_event("warning", "two_factor_failed", "2FA failed", {{"session_id", session_id}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("warning", "two_factor_failed", "2FA failed", data);
+  }
   if (err.empty()) err = "2FA failed";
   return false;
 }
@@ -629,6 +785,11 @@ bool workflow_engine::update_field_value(const std::string& session_id,
     if (field.id == field_ref || std::to_string(index) == field_ref) {
       field.value = value;
       field.requires_user_input = false;
+      if (!value.empty()) field.can_auto_fill = true;
+      field.user_modified = true;
+      field.source = "user";
+      field.reason = "edited by user";
+      field.validation_error.clear();
       updated = true;
       break;
     }
@@ -639,7 +800,59 @@ bool workflow_engine::update_field_value(const std::string& session_id,
     return false;
   }
   store.update_form_session(*session);
-  append_event("info", "form_field_updated", "Form field updated", {{"session_id", session_id}, {"field", field_ref}});
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    data["field"] = field_ref;
+    append_event("info", "form_field_updated", "Form field updated", data);
+  }
+  err.clear();
+  return true;
+}
+
+bool workflow_engine::remap_form_fields(const std::string& session_id, bool force, std::string& err) {
+  auto session = store.get_form_session(session_id);
+  if (!session) {
+    err = "form session not found";
+    return false;
+  }
+  message msg;
+  msg.uid = session->message_uid;
+  msg.mailbox_id = session->mailbox_id;
+  msg.subject = session->title;
+  msg.body_text = "Form: " + session->form_url;
+  msg.links.push_back({session->form_url, "", 0.95});
+
+  form_snapshot snapshot;
+  snapshot.url = session->form_url;
+  snapshot.form_type = session->form_type;
+  snapshot.title = session->title;
+  snapshot.fields = session->fields;
+
+  std::map<std::string, form_field> previous_by_id;
+  for (const auto& field : session->fields) previous_by_id[field.id] = field;
+  auto remapped = llm.map_fields(msg, snapshot, profile);
+  form_understanding_options options;
+  options.force = force;
+  options.preserve_user_edits = !force;
+  finalize_form_understanding(remapped, profile, previous_by_id, options);
+  auto validation = validate_understood_fields(remapped);
+  session->fields = std::move(remapped);
+  store.update_form_session(*session);
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "form_remapped", "Form fields remapped from Telegram", data);
+  }
+  std::ostringstream ss;
+  auto summary = mapping_summary_to_json(session->fields, validation);
+  ss << "Сопоставление обновлено.\n"
+     << "Готово: " << summary.value("ready", 0) << "\n"
+     << "Нужно ответить: " << summary.value("needs_input", 0) << "\n"
+     << "Низкая уверенность: " << summary.value("low_confidence", 0);
+  notify_text(ss.str(), err);
+  auto saved = store.get_form_session(session_id);
+  if (saved) send_form_review(*saved, err);
   err.clear();
   return true;
 }

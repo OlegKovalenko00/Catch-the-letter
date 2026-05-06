@@ -3,22 +3,23 @@ services:
     build: .
     depends_on:
       - browser-worker
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./config:/app/config
       - ./data:/app/data
+    entrypoint: []
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      - IMAP_USERNAME=${IMAP_USERNAME:-}
-      - IMAP_PASSWORD=${IMAP_PASSWORD:-}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
-      - WEB_AUTH_TOKEN=${WEB_AUTH_TOKEN:-}
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
     command:
+      - /app/catch_the_letter
       - --config
       - /app/config/app.json
-      - --events-limit
-      - "${EVENTS_LIMIT:-200}"
 
   browser-worker:
     build:
@@ -30,6 +31,7 @@ services:
       - ./data/browser:/data/browser
     environment:
       - BROWSER_DATA_DIR=/data/browser
+      - BROWSER_SESSION_TTL_SECONDS=3600
 
   ollama:
     image: ollama/ollama:latest

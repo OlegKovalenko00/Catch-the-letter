@@ -18,3 +18,4 @@ public:
 
 std::unique_ptr<llm_client> make_noop_llm_client();
 std::unique_ptr<llm_client> make_ollama_client(const llm_config& cfg);
+bool test_ollama_endpoint(const llm_config& cfg, std::string& err);

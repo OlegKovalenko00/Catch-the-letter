@@ -58,7 +58,12 @@ bool telegram_bot::request(const std::string& method,
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+  if (!cfg.proxy_url.empty()) {
+    curl_easy_setopt(curl, CURLOPT_PROXY, cfg.proxy_url.c_str());
+  }
 
   CURLcode rc = curl_easy_perform(curl);
   long code = 0;

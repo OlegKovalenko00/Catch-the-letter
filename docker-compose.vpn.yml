@@ -1,0 +1,14 @@
+services:
+  app:
+    network_mode: host
+    ports: !reset []
+    environment:
+      BROWSER_WORKER_ENDPOINT: http://127.0.0.1:8090
+      WEB_HOST: ${WEB_HOST:-127.0.0.1}
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-http://127.0.0.1:10809}
+    depends_on:
+      - browser-worker
+
+  browser-worker:
+    ports:
+      - "127.0.0.1:8090:8090"

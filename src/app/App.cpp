@@ -1,15 +1,21 @@
 ﻿#include "App.h"
 
+#include "FormUnderstandingEngine.h"
+
 #include "../util/Json.h"
+#include "../infra/UrlPolicy.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <sstream>
 #include <thread>
 
 using namespace std::chrono;
@@ -64,17 +70,44 @@ static std::string lower_ascii(std::string text) {
 }
 
 static nlohmann::json form_field_to_json(const form_field& field) {
+  nlohmann::json options = nlohmann::json::array();
+  for (const auto& option : field.options) {
+    options.push_back({
+        {"label", option.label},
+        {"value", option.value},
+        {"selector", option.selector},
+        {"id", option.id}
+    });
+  }
   return {
       {"id", field.id},
       {"selector", field.selector},
       {"label", field.label},
+      {"normalized_label", field.normalized_label},
       {"type", field.type},
       {"required", field.required},
-      {"options", field.options},
+      {"options", options},
       {"value", field.value},
+      {"values", field.values},
+      {"semantic_key", field.semantic_key},
       {"mapped_profile_key", field.mapped_profile_key},
+      {"suggested_value", field.suggested_value},
+      {"option_value", field.option_value},
       {"confidence", field.confidence},
-      {"requires_user_input", field.requires_user_input}
+      {"source", field.source},
+      {"reason", field.reason},
+      {"risk", field.risk},
+      {"requires_user_input", field.requires_user_input},
+      {"can_auto_fill", field.can_auto_fill},
+      {"unsupported_reason", field.unsupported_reason},
+      {"user_modified", field.user_modified},
+      {"validation_error", field.validation_error},
+      {"question_block_text", field.question_block_text},
+      {"placeholder", field.placeholder},
+      {"aria_label", field.aria_label},
+      {"nearby_text", field.nearby_text},
+      {"yandex_question_id", field.yandex_question_id},
+      {"yandex_option_ids", field.yandex_option_ids}
   };
 }
 
@@ -95,6 +128,152 @@ static nlohmann::json form_session_to_json(const form_session& session) {
       {"created_at", session.created_at},
       {"updated_at", session.updated_at}
   };
+}
+
+static nlohmann::json form_snapshot_to_json(const form_snapshot& snapshot) {
+  nlohmann::json fields = nlohmann::json::array();
+  for (const auto& field : snapshot.fields) fields.push_back(form_field_to_json(field));
+  nlohmann::json debug = nlohmann::json::object();
+  try {
+    debug = nlohmann::json::parse(snapshot.debug_json.empty() ? "{}" : snapshot.debug_json);
+  } catch (...) {
+    debug = snapshot.debug_json;
+  }
+  return {
+      {"session_id", snapshot.session_id},
+      {"url", snapshot.url},
+      {"final_url", snapshot.final_url},
+      {"title", snapshot.title},
+      {"form_type", snapshot.form_type},
+      {"auth_required", snapshot.auth_required},
+      {"screenshot_path", snapshot.screenshot_path},
+      {"fields", fields},
+      {"debug", debug}
+  };
+}
+
+static std::string message_kind_name(message_kind kind) {
+  switch (kind) {
+    case message_kind::ignored: return "ignored";
+    case message_kind::important_notification: return "important_notification";
+    case message_kind::form_request: return "form_request";
+    case message_kind::auth_required: return "auth_required";
+    case message_kind::unknown: return "unknown";
+  }
+  return "unknown";
+}
+
+static std::string redact_proxy_url(const std::string& url) {
+  auto scheme = url.find("://");
+  if (scheme == std::string::npos) return url;
+  size_t userinfo_start = scheme + 3;
+  size_t at = url.find('@', userinfo_start);
+  if (at == std::string::npos) return url;
+  size_t colon = url.find(':', userinfo_start);
+  if (colon == std::string::npos || colon > at) {
+    return url.substr(0, userinfo_start) + "<redacted>@" + url.substr(at + 1);
+  }
+  return url.substr(0, colon + 1) + "<redacted>@" + url.substr(at + 1);
+}
+
+static nlohmann::json api_success(std::string message, nlohmann::json data) {
+  nlohmann::json out = data;
+  out["ok"] = true;
+  out["message"] = std::move(message);
+  out["data"] = std::move(data);
+  return out;
+}
+
+static nlohmann::json api_error(std::string error, nlohmann::json details = nlohmann::json::object()) {
+  return {
+      {"ok", false},
+      {"error", std::move(error)},
+      {"details", std::move(details)}
+  };
+}
+
+static message make_sample_form_message() {
+  message msg;
+  msg.uid = "test-llm";
+  msg.mailbox_id = "test";
+  msg.provider = "demo";
+  msg.from = "teacher@hse.ru";
+  msg.subject = "Заполните форму обратной связи";
+  msg.snippet = "Нужно заполнить анкету";
+  msg.body_text = "Пожалуйста, заполните форму: https://forms.yandex.ru/u/test/";
+  msg.links.push_back({"https://forms.yandex.ru/u/test/", "forms.yandex.ru", 0.95});
+  return msg;
+}
+
+static user_profile make_sample_profile() {
+  user_profile sample;
+  sample.values["full_name"] = "Иванов Иван Иванович";
+  sample.values["hse_email"] = "student@edu.hse.ru";
+  sample.values["personal_email"] = "student@example.com";
+  sample.values["student_group"] = "БПИ000";
+  return sample;
+}
+
+static form_snapshot make_sample_mapping_form() {
+  form_snapshot snapshot;
+  snapshot.url = "https://forms.yandex.ru/u/test/";
+  snapshot.form_type = "yandex_forms";
+  snapshot.title = "Тестовая форма";
+  form_field full_name;
+  full_name.id = "full_name";
+  full_name.label = "ФИО";
+  full_name.type = "text";
+  full_name.required = true;
+  snapshot.fields.push_back(full_name);
+
+  form_field email;
+  email.id = "email";
+  email.label = "Email";
+  email.type = "email";
+  email.required = true;
+  snapshot.fields.push_back(email);
+
+  form_field group;
+  group.id = "group";
+  group.label = "Группа";
+  group.type = "text";
+  group.required = true;
+  snapshot.fields.push_back(group);
+
+  form_field rating;
+  rating.id = "rating";
+  rating.label = "Оценка";
+  rating.type = "radio_group";
+  rating.required = true;
+  rating.options = {{"5", "5", "", ""}, {"4", "4", "", ""}, {"3", "3", "", ""}};
+  snapshot.fields.push_back(rating);
+  return snapshot;
+}
+
+static bool field_has_label(const form_field& field, const std::string& text) {
+  return field.label.find(text) != std::string::npos ||
+         field.normalized_label.find(text) != std::string::npos ||
+         field.id.find(text) != std::string::npos;
+}
+
+static bool has_demo_rating_radio_group(const std::vector<form_field>& fields) {
+  for (const auto& field : fields) {
+    if (field.type != "radio_group") continue;
+    if (!field_has_label(field, "Оценка") && !field_has_label(field, "rating")) continue;
+    if (has_option_label(field.options, "5") &&
+        has_option_label(field.options, "4") &&
+        has_option_label(field.options, "3")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool has_checkbox_group(const std::vector<form_field>& fields) {
+  for (const auto& field : fields) {
+    if (field.type == "checkbox_group" && !field.options.empty()) return true;
+  }
+  return false;
 }
 
 app::app(app_config cfg,
@@ -380,7 +559,14 @@ std::string app::status_json() const {
   j["matched_last"] = status.matched_last;
   j["events_limit"] = cfg.events_limit;
   j["log_level"] = cfg.log_level;
-  j["telegram"] = {{"enabled", cfg.telegram.enabled}, {"poll_updates", cfg.telegram.poll_updates}};
+  j["telegram"] = {
+      {"enabled", cfg.telegram.enabled},
+      {"poll_updates", cfg.telegram.poll_updates},
+      {"token_configured", !cfg.telegram.bot_token.empty()},
+      {"chat_id_configured", !cfg.telegram.chat_id.empty()},
+      {"proxy_configured", !cfg.telegram.proxy_url.empty()},
+      {"proxy_url_redacted", redact_proxy_url(cfg.telegram.proxy_url)}
+  };
   j["browser_worker"] = {{"enabled", cfg.browser_worker.enabled}, {"endpoint", cfg.browser_worker.endpoint}};
   j["llm"] = {{"enabled", cfg.llm.enabled}, {"provider", cfg.llm.provider}, {"model", cfg.llm.model}};
   j["web"] = {{"enabled", cfg.http.enabled}, {"host", cfg.http.host}, {"port", cfg.http.port}};
@@ -594,6 +780,9 @@ std::string app::config_json() const {
   out["telegram"] = {
       {"enabled", cfg.telegram.enabled},
       {"chat_id", cfg.telegram.chat_id.empty() ? "" : "***"},
+      {"bot_token_configured", !cfg.telegram.bot_token.empty()},
+      {"proxy_configured", !cfg.telegram.proxy_url.empty()},
+      {"proxy_url_redacted", redact_proxy_url(cfg.telegram.proxy_url)},
       {"poll_updates", cfg.telegram.poll_updates},
       {"poll_interval_seconds", cfg.telegram.poll_interval_seconds}
   };
@@ -634,20 +823,451 @@ std::string app::config_json() const {
 
 std::string app::test_browser_json() {
   std::string err;
-  bool ok = workflow_ptr->test_browser(err);
-  return nlohmann::json({{"ok", ok}, {"error", err}}).dump(2);
+  nlohmann::json out = {
+      {"ok", false},
+      {"worker_reachable", false},
+      {"demo_inspect_ok", false},
+      {"radio_group_ok", false},
+      {"checkbox_group_ok", false},
+      {"endpoint", cfg.browser_worker.endpoint},
+      {"error", ""}
+  };
+  if (!browser_ptr || !browser_ptr->health(err)) {
+    out["error"] = err.empty() ? "browser-worker unavailable" : err;
+    return out.dump(2);
+  }
+  out["worker_reachable"] = true;
+
+  std::string url = cfg.browser_worker.endpoint + "/demo-form";
+  auto snapshot = browser_ptr->inspect_form(url, err, true);
+  if (!snapshot.has_value()) {
+    out["error"] = err.empty() ? "demo form inspect failed" : err;
+    return out.dump(2);
+  }
+  out["demo_inspect_ok"] = true;
+  out["form_type"] = snapshot->form_type;
+  out["field_count"] = snapshot->fields.size();
+  out["radio_group_ok"] = has_demo_rating_radio_group(snapshot->fields);
+  out["checkbox_group_ok"] = has_checkbox_group(snapshot->fields);
+  out["debug"] = form_snapshot_to_json(*snapshot)["debug"];
+  if (!snapshot->session_id.empty()) {
+    std::string close_err;
+    browser_ptr->close_session(snapshot->session_id, close_err);
+  }
+  out["ok"] = out["worker_reachable"].get<bool>() &&
+              out["demo_inspect_ok"].get<bool>() &&
+              out["radio_group_ok"].get<bool>() &&
+              out["checkbox_group_ok"].get<bool>();
+  if (!out["ok"].get<bool>()) out["error"] = "demo form fields were not extracted as expected";
+  return out.dump(2);
+}
+
+std::string app::test_imap_json() {
+  nlohmann::json out;
+  out["ok"] = true;
+  out["mailboxes"] = nlohmann::json::array();
+  auto mailbox_configs = cfg.mailboxes.empty() ? std::vector<imap_config>{cfg.imap} : cfg.mailboxes;
+  for (const auto& mailbox : mailbox_configs) {
+    nlohmann::json item = {
+        {"id", mailbox.mailbox_id},
+        {"provider", mailbox.provider},
+        {"reachable", false},
+        {"auth_ok", false},
+        {"folder_ok", false},
+        {"max_uid", 0},
+        {"skipped", false},
+        {"error", ""}
+    };
+    if (lower_ascii(mailbox.auth_method) == "xoauth2") {
+      item["skipped"] = true;
+      item["error"] = "Gmail XOAUTH2 is not implemented yet";
+      out["ok"] = false;
+      out["mailboxes"].push_back(std::move(item));
+      continue;
+    }
+    if (mailbox.username.empty() || mailbox.password.empty()) {
+      item["skipped"] = true;
+      item["error"] = "imap username/password are not configured";
+      out["ok"] = false;
+      out["mailboxes"].push_back(std::move(item));
+      continue;
+    }
+    auto result = test_imap_mailbox(mailbox);
+    item["reachable"] = result.reachable;
+    item["auth_ok"] = result.auth_ok;
+    item["folder_ok"] = result.folder_ok;
+    item["max_uid"] = result.max_uid;
+    item["error"] = result.error;
+    if (!result.reachable || !result.auth_ok || !result.folder_ok) out["ok"] = false;
+    out["mailboxes"].push_back(std::move(item));
+  }
+  return out.dump(2);
 }
 
 std::string app::test_llm_json() {
   std::string err;
-  bool ok = workflow_ptr->test_llm(err);
-  return nlohmann::json({{"ok", ok}, {"error", err}}).dump(2);
+  bool reachable = false;
+  bool fallback = false;
+  std::unique_ptr<llm_client> test_client;
+  std::string active_client = "NoopLlmClient";
+
+  if (cfg.llm.enabled) {
+    reachable = test_ollama_endpoint(cfg.llm, err);
+    if (reachable) {
+      test_client = make_ollama_client(cfg.llm);
+      active_client = "OllamaClient";
+    } else {
+      fallback = true;
+      append_event("warn", "llm_fallback", "Ollama unavailable, using NoopLlmClient", {{"error", err}});
+      test_client = make_noop_llm_client();
+    }
+  } else {
+    test_client = make_noop_llm_client();
+  }
+
+  message msg = make_sample_form_message();
+  auto analysis = test_client->analyze_email(msg);
+  form_snapshot sample_form = make_sample_mapping_form();
+  auto mapped = test_client->map_fields(msg, sample_form, make_sample_profile());
+
+  auto mapping_ok = [](const std::vector<form_field>& fields) {
+    bool full_name = false;
+    bool email = false;
+    bool group = false;
+    for (const auto& field : fields) {
+      if (field.label == "ФИО" && field.mapped_profile_key == "full_name" && !field.value.empty()) full_name = true;
+      if (field.label == "Email" &&
+          (field.mapped_profile_key == "hse_email" || field.mapped_profile_key == "personal_email") &&
+          !field.value.empty()) {
+        email = true;
+      }
+      if (field.label == "Группа" && field.mapped_profile_key == "student_group" && !field.value.empty()) group = true;
+    }
+    return full_name && email && group;
+  };
+
+  bool sample_mapping_ok = mapping_ok(mapped);
+  if (cfg.llm.enabled && reachable && !sample_mapping_ok) {
+    fallback = true;
+    active_client = "NoopLlmClient";
+    auto noop = make_noop_llm_client();
+    mapped = noop->map_fields(msg, sample_form, make_sample_profile());
+    sample_mapping_ok = mapping_ok(mapped);
+    append_event("warn", "llm_fallback", "Ollama sample mapping failed validation, using NoopLlmClient");
+  }
+
+  nlohmann::json mapped_fields = nlohmann::json::object();
+  int mapped_count = 0;
+  int needs_input_count = 0;
+  for (const auto& field : mapped) {
+    if (!field.mapped_profile_key.empty() || !field.value.empty()) mapped_count++;
+    if (field.requires_user_input) needs_input_count++;
+    mapped_fields[field.label.empty() ? field.id : field.label] = {
+        {"mapped_profile_key", field.mapped_profile_key},
+        {"semantic_key", field.semantic_key},
+        {"value", field.value},
+        {"suggested_value", field.suggested_value},
+        {"confidence", field.confidence},
+        {"source", field.source},
+        {"reason", field.reason},
+        {"risk", field.risk}
+    };
+  }
+
+  nlohmann::json out = {
+      {"ok", sample_mapping_ok && analysis.kind == message_kind::form_request},
+      {"enabled", cfg.llm.enabled},
+      {"provider", cfg.llm.enabled ? cfg.llm.provider : "noop"},
+      {"active_client", active_client},
+      {"model", cfg.llm.model},
+      {"endpoint", cfg.llm.endpoint},
+      {"reachable", reachable},
+      {"fallback", fallback},
+      {"sample_classification", message_kind_name(analysis.kind)},
+      {"sample_mapping_ok", sample_mapping_ok},
+      {"mapped_count", mapped_count},
+      {"needs_input_count", needs_input_count},
+      {"invalid_json_count", 0},
+      {"invalid_schema_count", 0},
+      {"last_llm_error", (cfg.llm.enabled && !reachable) ? err : ""},
+      {"fallback_used", fallback},
+      {"mapped_fields", mapped_fields},
+      {"error", (cfg.llm.enabled && !reachable) ? err : ""}
+  };
+  return out.dump(2);
 }
 
 std::string app::test_telegram_json() {
   std::string err;
   bool ok = workflow_ptr->test_telegram(err);
-  return nlohmann::json({{"ok", ok}, {"error", err}}).dump(2);
+  nlohmann::json out = {
+      {"ok", ok},
+      {"token_configured", !cfg.telegram.bot_token.empty()},
+      {"chat_id_configured", !cfg.telegram.chat_id.empty()},
+      {"proxy_configured", !cfg.telegram.proxy_url.empty()},
+      {"proxy_url_redacted", redact_proxy_url(cfg.telegram.proxy_url)},
+      {"ip_resolve", "ipv4"},
+      {"timeout_seconds", 30},
+      {"message", ok ? "Telegram test message sent" : ""},
+      {"curl_error", ok ? "" : err},
+      {"http_status", 0},
+      {"error", ok ? "" : err}
+  };
+  return out.dump(2);
+}
+
+std::string app::inspect_form_url_json(const std::string& body) {
+  nlohmann::json parsed;
+  std::string err;
+  if (!json_util::parse(body.empty() ? "{}" : body, parsed, &err)) {
+    return api_error(err).dump(2);
+  }
+  std::string url = parsed.value("url", "");
+  bool debug = parsed.value("debug", false);
+  if (url.empty()) return api_error("url is required").dump(2);
+  std::string reason;
+  if (!is_allowed_url(url, cfg.security, reason)) {
+    return api_error(reason, {{"url", sanitize_url_for_log(url)}}).dump(2);
+  }
+  auto snapshot = browser_ptr->inspect_form(url, err, debug);
+  if (!snapshot.has_value()) {
+    return api_error(err.empty() ? "inspect failed" : err).dump(2);
+  }
+  nlohmann::json out = form_snapshot_to_json(*snapshot);
+  if (!snapshot->session_id.empty()) {
+    std::string close_err;
+    browser_ptr->close_session(snapshot->session_id, close_err);
+  }
+  return api_success("form inspected", out).dump(2);
+}
+
+std::string app::create_form_session_from_url_json(const std::string& body) {
+  nlohmann::json parsed;
+  std::string err;
+  if (!json_util::parse(body.empty() ? "{}" : body, parsed, &err)) {
+    return api_error(err).dump(2);
+  }
+  std::string url = parsed.value("url", "");
+  std::string title = parsed.value("title", "Manual test form");
+  bool debug = parsed.value("debug", true);
+  if (url.empty()) return api_error("url is required").dump(2);
+
+  std::string reason;
+  if (!is_allowed_url(url, cfg.security, reason)) {
+    return api_error(reason, {{"url", sanitize_url_for_log(url)}}).dump(2);
+  }
+  if (lower_ascii(cfg.security.mode) == "paranoid") {
+    form_session manual;
+    manual.mailbox_id = "manual";
+    manual.message_uid = "manual-" + std::to_string(std::time(nullptr));
+    manual.status = "manual_required";
+    manual.form_url = url;
+    manual.form_type = "manual";
+    manual.title = title;
+    std::string id = storage_ptr->create_form_session(manual);
+    append_event("info", "paranoid_manual_required", "Paranoid mode manual required",
+                 {{"session_id", id}, {"url", sanitize_url_for_log(url)}});
+    return api_success("manual session created in paranoid mode",
+                       {{"session_id", id}, {"status", "manual_required"}}).dump(2);
+  }
+
+  auto snapshot = browser_ptr->inspect_form(url, err, debug);
+  if (!snapshot.has_value()) {
+    form_session manual;
+    manual.mailbox_id = "manual";
+    manual.message_uid = "manual-" + std::to_string(std::time(nullptr));
+    manual.status = "manual_required";
+    manual.form_url = url;
+    manual.form_type = "unknown";
+    manual.title = title;
+    std::string id = storage_ptr->create_form_session(manual);
+    append_event("error", "manual_form_inspect_failed", err, {{"session_id", id}, {"url", sanitize_url_for_log(url)}});
+    return api_error(err.empty() ? "inspect failed" : err,
+                     {{"session_id", id}, {"status", "manual_required"}}).dump(2);
+  }
+
+  message msg;
+  msg.uid = "manual-" + std::to_string(std::time(nullptr));
+  msg.mailbox_id = "manual";
+  msg.provider = "manual";
+  msg.subject = title;
+  msg.body_text = "Manual form: " + url;
+  msg.links.push_back({url, "", 0.95});
+
+  form_session session;
+  session.mailbox_id = msg.mailbox_id;
+  session.message_uid = msg.uid;
+  session.form_url = snapshot->url.empty() ? url : snapshot->url;
+  session.form_type = snapshot->form_type;
+  session.title = snapshot->title.empty() ? title : snapshot->title;
+  session.browser_session_id = snapshot->session_id;
+  if (snapshot->auth_required) {
+    session.status = "waiting_auth";
+    session.auth_state_json = nlohmann::json({{"state", "required"}, {"url", snapshot->final_url}}).dump();
+  } else if (snapshot->fields.empty()) {
+    session.status = "manual_required";
+  } else {
+    session.status = "waiting_user_review";
+    session.fields = llm_ptr->map_fields(msg, *snapshot, profile);
+  }
+  std::string id = storage_ptr->create_form_session(session);
+  auto saved = storage_ptr->get_form_session(id);
+  if (saved && saved->status == "waiting_user_review") {
+    std::string send_err;
+    workflow_ptr->send_form_review(*saved, send_err);
+  }
+  append_event("info", "manual_form_session_created", "Manual form session created",
+               {{"session_id", id}, {"status", session.status}, {"url", sanitize_url_for_log(url)}});
+  return api_success("manual form session created",
+                     {{"session_id", id}, {"status", session.status}}).dump(2);
+}
+
+std::string app::remap_form_json(const std::string& id, const std::string& body) {
+  auto session = storage_ptr->get_form_session(id);
+  if (!session) return api_error("form session not found").dump(2);
+  nlohmann::json request = nlohmann::json::object();
+  std::string parse_err;
+  if (!body.empty() && !json_util::parse(body, request, &parse_err)) {
+    return api_error(parse_err).dump(2);
+  }
+  form_understanding_options options;
+  options.force = request.value("force", false);
+  options.preserve_user_edits = !options.force;
+  bool use_llm = request.value("use_llm", true);
+
+  message msg;
+  msg.uid = session->message_uid;
+  msg.mailbox_id = session->mailbox_id;
+  msg.subject = session->title;
+  msg.body_text = "Form: " + session->form_url;
+  msg.links.push_back({session->form_url, "", 0.95});
+  form_snapshot snapshot;
+  snapshot.url = session->form_url;
+  snapshot.form_type = session->form_type;
+  snapshot.title = session->title;
+  snapshot.fields = session->fields;
+
+  std::map<std::string, form_field> previous_by_id;
+  for (const auto& field : session->fields) {
+    if (!field.id.empty()) previous_by_id[field.id] = field;
+  }
+  std::unique_ptr<llm_client> noop;
+  llm_client* mapper = llm_ptr.get();
+  if (!use_llm) {
+    noop = make_noop_llm_client();
+    mapper = noop.get();
+  }
+  auto remapped = mapper->map_fields(msg, snapshot, profile);
+  finalize_form_understanding(remapped, profile, previous_by_id, options);
+  nlohmann::json diff = nlohmann::json::array();
+  for (auto& field : remapped) {
+    auto it = previous_by_id.find(field.id);
+    std::string old_value = it == previous_by_id.end() ? "" : it->second.value;
+    std::string old_source = it == previous_by_id.end() ? "" : it->second.source;
+    diff.push_back({
+        {"field_id", field.id},
+        {"label", field.label},
+        {"old_value", old_value},
+        {"new_value", field.value},
+        {"old_source", old_source},
+        {"new_source", field.source},
+        {"mapped_profile_key", field.mapped_profile_key},
+        {"semantic_key", field.semantic_key},
+        {"confidence", field.confidence},
+        {"reason", field.reason},
+        {"risk", field.risk},
+        {"changed", old_value != field.value || old_source != field.source}
+    });
+  }
+  auto validation = validate_understood_fields(remapped);
+  auto summary = mapping_summary_to_json(remapped, validation);
+  session->fields = std::move(remapped);
+  storage_ptr->update_form_session(*session);
+  append_event("info", "form_remapped", "Form fields remapped", {{"session_id", id}});
+  auto saved = storage_ptr->get_form_session(id);
+  nlohmann::json data = {
+      {"diff", diff},
+      {"fields", saved ? form_session_to_json(*saved)["fields"] : nlohmann::json::array()},
+      {"form", saved ? form_session_to_json(*saved) : nlohmann::json::object()},
+      {"summary", summary},
+      {"validation", validation_to_json(validation)}
+  };
+  nlohmann::json out = api_success("fields remapped", data);
+  out["diff"] = diff;
+  out["form"] = data["form"];
+  out["summary"] = summary;
+  return out.dump(2);
+}
+
+std::string app::explain_form_field_json(const std::string& id, const std::string& body) {
+  auto session = storage_ptr->get_form_session(id);
+  if (!session) return api_error("form session not found").dump(2);
+  nlohmann::json parsed;
+  std::string err;
+  if (!json_util::parse(body.empty() ? "{}" : body, parsed, &err)) return api_error(err).dump(2);
+  std::string field_id = parsed.value("field_id", "");
+  if (field_id.empty()) return api_error("field_id is required").dump(2);
+  for (const auto& field : session->fields) {
+    if (field.id != field_id) continue;
+    std::string why;
+    if (field.requires_user_input) {
+      why = field.required ? "required field is empty or needs confirmation" : "field needs optional user choice";
+    }
+    if (!field.validation_error.empty()) why = field.validation_error;
+    nlohmann::json data = {
+        {"field_id", field.id},
+        {"label", field.label},
+        {"reason", field.reason},
+        {"source", field.source},
+        {"confidence", field.confidence},
+        {"risk", field.risk},
+        {"why_needs_input", why},
+        {"suggested_next_action", field.can_auto_fill ? "review value and validate" : "answer manually or use Web UI"}
+    };
+    return api_success("field explanation", data).dump(2);
+  }
+  return api_error("field not found").dump(2);
+}
+
+std::string app::validate_form_json(const std::string& id) {
+  auto session = storage_ptr->get_form_session(id);
+  if (!session) return api_error("form session not found").dump(2);
+
+  auto validation = validate_understood_fields(session->fields);
+  auto validation_json = validation_to_json(validation);
+  nlohmann::json fields = nlohmann::json::array();
+  for (const auto& field : session->fields) {
+    std::string error;
+    auto find_error = [&](const nlohmann::json& arr) {
+      for (const auto& item : arr) {
+        if (item.value("field_id", "") == field.id) return item.value("error", "");
+      }
+      return std::string{};
+    };
+    error = find_error(validation_json["missing_required"]);
+    if (error.empty()) error = find_error(validation_json["invalid_options"]);
+    if (error.empty()) error = find_error(validation_json["unsupported_required"]);
+    fields.push_back({
+        {"id", field.id},
+        {"label", field.label},
+        {"ok", error.empty()},
+        {"error", error},
+        {"required", field.required},
+        {"requires_user_input", field.requires_user_input},
+        {"value", field.value},
+        {"source", field.source},
+        {"confidence", field.confidence},
+        {"reason", field.reason},
+        {"risk", field.risk}
+    });
+  }
+  nlohmann::json data = validation_json;
+  data["valid"] = validation.can_fill;
+  data["fields"] = fields;
+  data["summary"] = mapping_summary_to_json(session->fields, validation);
+  nlohmann::json out = api_success(validation.can_fill ? "validation passed" : "validation found issues", data);
+  for (auto it = data.begin(); it != data.end(); ++it) out[it.key()] = it.value();
+  return out.dump(2);
 }
 
 bool app::create_demo_form(bool auth_demo, std::string& err) {

@@ -20,10 +20,32 @@ IMAP mailbox(es)
 - `RuleEngine`: rule matching over sender, subject, body, provider, dates, links, and attachments.
 - `WorkflowEngine`: important notification, form detection, browser inspect/fill/submit, auth, 2FA, manual/cancel.
 - `BrowserWorkerClient`: JSON HTTP client for the browser-worker.
-- `TelegramDialogManager`: polling, callbacks, edit flow, 2FA dialog flow.
-- `HttpServer`: local Web UI and REST API.
+- `TelegramDialogManager`: polling, callbacks, guided missing-field answers, batch edit fallback, Remap callback, 2FA dialog flow.
+- `HttpServer`: local Web UI static file serving plus REST API. It loads `web/index.html`, `web/app.js`, and `web/styles.css` from `/app/web` in Docker or `./web` in local runs, with a tiny fallback page if files are missing.
 - `OllamaClient` / `NoopLlmClient`: local optional LLM and deterministic fallback.
 - `SqliteStorage`: checkpoints, dedup, active sessions, Telegram dialogs, event log, runtime keys.
+
+## Field Mapping Pipeline
+
+The browser-worker returns an extended field model:
+
+- field identity: `id`, `selector`, `label`, `normalized_label`, `question_block_text`, `placeholder`, `aria_label`, `nearby_text`;
+- type: text, email, tel, textarea, select, checkbox, radio group, checkbox group;
+- option objects: `label`, `value`, `selector`, `id`;
+- mapping metadata: `semantic_key`, `mapped_profile_key`, `confidence`, `source`, `reason`;
+- safety flags: `requires_user_input`, `can_auto_fill`, `unsupported_reason`, `user_modified`, `validation_error`.
+
+Mapping order:
+
+1. `FormUnderstandingEngine` normalizes labels, question text, placeholders and nearby text.
+2. Deterministic aliases map common HSE/student fields without any network call.
+3. Type and option compatibility checks reject unsafe radio/select/checkbox suggestions.
+4. Optional Ollama semantic mapping runs in JSON mode with safe prompt data only.
+5. App-side schema validation clamps confidence, ignores unknown field ids and rejects bad options.
+6. User override protection preserves `user_modified` fields unless `force=true`.
+7. Final fillability validation reports missing required, invalid options, unsupported required fields and warnings.
+
+`Remap with AI` reruns mapping but preserves fields edited by the user. `Validate` checks missing required fields, invalid options and unsupported required controls before fill.
 
 ## Workflow Statuses
 
@@ -67,6 +89,18 @@ URL policy allows only HTTP/HTTPS and blocks:
 Domains are resolved with `getaddrinfo`; if DNS resolution fails, the URL is blocked. `open` allows public HTTP/HTTPS except blocked domains. `strict` allows only `allowed_domains`. `paranoid` never opens browser-worker and creates manual sessions.
 
 Logs and event records redact URL query strings and must not contain passwords, 2FA codes, cookies, tokens, or session secrets.
+
+## Telegram Proxy Model
+
+`TELEGRAM_PROXY_URL` is read from the environment through `telegram.proxy_url_env`. Telegram HTTP requests use libcurl with:
+
+- `CURLOPT_PROXY` when proxy URL is configured;
+- IPv4 resolution;
+- 15 second connect timeout;
+- 30 second request timeout;
+- SSL verification enabled.
+
+For Linux host VPN routing, `docker-compose.vpn.yml` runs only the C++ app with `network_mode: host`, sets `BROWSER_WORKER_ENDPOINT=http://127.0.0.1:8090`, and leaves browser-worker in the normal Docker service with a host-bound port.
 
 ## Auth Model
 
