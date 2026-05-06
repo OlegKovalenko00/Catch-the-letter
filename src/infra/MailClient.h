@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "../domain/Message.h"
 #include "../app/Config.h"

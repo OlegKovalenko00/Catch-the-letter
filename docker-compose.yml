@@ -16,6 +16,13 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-http://ollama:11434/api/chat}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:4b}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-300}
+      LLM_HEALTHCHECK_TIMEOUT_SECONDS: ${LLM_HEALTHCHECK_TIMEOUT_SECONDS:-30}
+      LLM_AUTO_FALLBACK: ${LLM_AUTO_FALLBACK:-true}
+      LLM_MIN_MEMORY_GB: ${LLM_MIN_MEMORY_GB:-6}
     command:
       - /app/catch_the_letter
       - --config
@@ -41,3 +48,45 @@ services:
       - "127.0.0.1:11434:11434"
     volumes:
       - ./data/ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ollama-init:
+    image: ollama/ollama:latest
+    profiles:
+      - llm
+    depends_on:
+      ollama:
+        condition: service_started
+    volumes:
+      - ./data/ollama:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-qwen3:4b}
+      LLM_AUTO_PULL: ${LLM_AUTO_PULL:-true}
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        if [ "$${LLM_AUTO_PULL}" != "true" ]; then
+          echo "LLM_AUTO_PULL disabled; skipping model pull"
+          exit 0
+        fi
+        echo "Waiting for Ollama..."
+        for i in $$(seq 1 60); do
+          ollama list >/dev/null 2>&1 && break
+          sleep 2
+        done
+        if ! ollama list >/dev/null 2>&1; then
+          echo "Ollama is not reachable; model pull skipped"
+          exit 0
+        fi
+        echo "Pulling model: $${LLM_MODEL}"
+        ollama pull "$${LLM_MODEL}" || {
+          echo "Model pull failed: $${LLM_MODEL}"
+          exit 0
+        }
+        echo "Model ready: $${LLM_MODEL}"

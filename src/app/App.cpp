@@ -1,4 +1,4 @@
-﻿#include "App.h"
+#include "App.h"
 
 #include "FormUnderstandingEngine.h"
 
@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -61,6 +62,35 @@ static std::uint64_t parse_uid_or_zero(const std::string& uid) {
   } catch (...) {
     return 0;
   }
+}
+
+static std::optional<double> detect_total_memory_gb() {
+#if defined(__linux__)
+  std::ifstream meminfo("/proc/meminfo");
+  std::string key;
+  std::uint64_t value_kb = 0;
+  std::string unit;
+  while (meminfo >> key >> value_kb >> unit) {
+    if (key == "MemTotal:") {
+      return static_cast<double>(value_kb) / 1024.0 / 1024.0;
+    }
+  }
+#endif
+  return std::nullopt;
+}
+
+static nlohmann::json llm_memory_json(const llm_config& cfg, const std::optional<double>& total_gb) {
+  nlohmann::json memory = {
+      {"detected", total_gb.has_value()},
+      {"min_required_gb", cfg.min_memory_gb},
+      {"recommended_gb", cfg.recommended_memory_gb},
+      {"sufficient", true}
+  };
+  if (total_gb) {
+    memory["total_gb"] = *total_gb;
+    memory["sufficient"] = *total_gb >= cfg.min_memory_gb;
+  }
+  return memory;
 }
 
 static std::string lower_ascii(std::string text) {
@@ -331,7 +361,33 @@ app::app(app_config cfg,
   telegram_bot_ptr = std::make_unique<telegram_bot>(this->cfg.telegram);
   browser_ptr = std::make_unique<browser_worker_client>(this->cfg.browser_worker);
   if (this->cfg.llm.enabled) {
-    llm_ptr = make_ollama_client(this->cfg.llm);
+    auto total_memory_gb = detect_total_memory_gb();
+    if (total_memory_gb && *total_memory_gb < this->cfg.llm.min_memory_gb) {
+      llm_ptr = make_noop_llm_client();
+      nlohmann::json data = llm_memory_json(this->cfg.llm, total_memory_gb);
+      data["model"] = this->cfg.llm.model;
+      append_event(
+          "warn",
+          "llm_fallback",
+          "Insufficient RAM for local LLM, using NoopLlmClient",
+          data
+      );
+    } else {
+      if (this->cfg.llm.startup_probe) {
+        std::string probe_err;
+        if (!test_ollama_health(this->cfg.llm, probe_err)) {
+          nlohmann::json data = {
+              {"endpoint", this->cfg.llm.endpoint},
+              {"model", this->cfg.llm.model},
+              {"healthcheck_timeout_seconds", this->cfg.llm.healthcheck_timeout_seconds},
+              {"error", probe_err},
+              {"next_action", "Run docker compose --profile llm up -d ollama ollama-init or wait for model pull"}
+          };
+          append_event("warn", "llm_fallback", "Ollama healthcheck failed at startup; calls will fallback to Noop", data);
+        }
+      }
+      llm_ptr = make_ollama_client(this->cfg.llm);
+    }
   } else {
     llm_ptr = make_noop_llm_client();
   }
@@ -568,7 +624,15 @@ std::string app::status_json() const {
       {"proxy_url_redacted", redact_proxy_url(cfg.telegram.proxy_url)}
   };
   j["browser_worker"] = {{"enabled", cfg.browser_worker.enabled}, {"endpoint", cfg.browser_worker.endpoint}};
-  j["llm"] = {{"enabled", cfg.llm.enabled}, {"provider", cfg.llm.provider}, {"model", cfg.llm.model}};
+  j["llm"] = {
+      {"enabled", cfg.llm.enabled},
+      {"provider", cfg.llm.provider},
+      {"model", cfg.llm.model},
+      {"endpoint", cfg.llm.endpoint},
+      {"auto_fallback_to_noop", cfg.llm.auto_fallback_to_noop},
+      {"startup_probe", cfg.llm.startup_probe},
+      {"memory", llm_memory_json(cfg.llm, detect_total_memory_gb())}
+  };
   j["web"] = {{"enabled", cfg.http.enabled}, {"host", cfg.http.host}, {"port", cfg.http.port}};
   j["mailboxes_status"] = nlohmann::json::array();
   for (const auto& mailbox : mailboxes) {
@@ -795,8 +859,17 @@ std::string app::config_json() const {
       {"enabled", cfg.llm.enabled},
       {"provider", cfg.llm.provider},
       {"endpoint", cfg.llm.endpoint},
+      {"endpoint_env", cfg.llm.endpoint_env},
       {"model", cfg.llm.model},
-      {"privacy_mode", cfg.llm.privacy_mode}
+      {"model_env", cfg.llm.model_env},
+      {"privacy_mode", cfg.llm.privacy_mode},
+      {"timeout_seconds", cfg.llm.timeout_seconds},
+      {"healthcheck_timeout_seconds", cfg.llm.healthcheck_timeout_seconds},
+      {"auto_fallback_to_noop", cfg.llm.auto_fallback_to_noop},
+      {"auto_pull", cfg.llm.auto_pull},
+      {"startup_probe", cfg.llm.startup_probe},
+      {"min_memory_gb", cfg.llm.min_memory_gb},
+      {"recommended_memory_gb", cfg.llm.recommended_memory_gb}
   };
   out["security"] = {
       {"mode", cfg.security.mode},
@@ -907,28 +980,61 @@ std::string app::test_imap_json() {
 std::string app::test_llm_json() {
   std::string err;
   bool reachable = false;
+  bool model_ready = false;
   bool fallback = false;
+  std::string warning;
+  std::string next_action;
   std::unique_ptr<llm_client> test_client;
   std::string active_client = "NoopLlmClient";
+  double total_duration_ms = 0.0;
+  auto total_memory_gb = detect_total_memory_gb();
+  bool memory_sufficient = !total_memory_gb || *total_memory_gb >= cfg.llm.min_memory_gb;
 
-  if (cfg.llm.enabled) {
-    reachable = test_ollama_endpoint(cfg.llm, err);
-    if (reachable) {
+  if (cfg.llm.enabled && !memory_sufficient) {
+    fallback = true;
+    std::ostringstream ss;
+    ss << "Insufficient RAM for default model " << cfg.llm.model
+       << ": need at least " << cfg.llm.min_memory_gb << "GB";
+    warning = ss.str();
+    next_action = "Use Noop fallback, choose a smaller model, or run on a machine with more RAM";
+    test_client = make_noop_llm_client();
+  } else if (cfg.llm.enabled) {
+    auto probe = probe_ollama_endpoint(cfg.llm);
+    reachable = probe.reachable;
+    model_ready = probe.model_ready;
+    total_duration_ms = probe.total_duration_ms;
+    err = probe.error;
+    if (probe.reachable && probe.model_ready) {
       test_client = make_ollama_client(cfg.llm);
       active_client = "OllamaClient";
     } else {
       fallback = true;
-      append_event("warn", "llm_fallback", "Ollama unavailable, using NoopLlmClient", {{"error", err}});
+      warning = err.empty() ? "Ollama model is unavailable; using rule-based mapping" :
+                              "Ollama model is unavailable; using rule-based mapping: " + err;
+      next_action = "Run: docker compose --profile llm up -d ollama ollama-init, or wait for model pull";
+      nlohmann::json data = {
+          {"endpoint", cfg.llm.endpoint},
+          {"model", cfg.llm.model},
+          {"timeout_seconds", cfg.llm.timeout_seconds},
+          {"healthcheck_timeout_seconds", cfg.llm.healthcheck_timeout_seconds},
+          {"total_duration_ms", probe.total_duration_ms},
+          {"error", err},
+          {"next_action", next_action}
+      };
+      append_event("warn", "llm_fallback", "Ollama unavailable, using NoopLlmClient", data);
       test_client = make_noop_llm_client();
     }
   } else {
+    warning = "Local LLM is disabled; using rule-based mapping";
+    next_action = "Set LLM_ENABLED=true and run docker compose --profile llm up --build";
     test_client = make_noop_llm_client();
   }
 
   message msg = make_sample_form_message();
-  auto analysis = test_client->analyze_email(msg);
+  auto sample_client = make_noop_llm_client();
+  auto analysis = sample_client->analyze_email(msg);
   form_snapshot sample_form = make_sample_mapping_form();
-  auto mapped = test_client->map_fields(msg, sample_form, make_sample_profile());
+  auto mapped = sample_client->map_fields(msg, sample_form, make_sample_profile());
 
   auto mapping_ok = [](const std::vector<form_field>& fields) {
     bool full_name = false;
@@ -947,13 +1053,17 @@ std::string app::test_llm_json() {
   };
 
   bool sample_mapping_ok = mapping_ok(mapped);
-  if (cfg.llm.enabled && reachable && !sample_mapping_ok) {
+  if (!sample_mapping_ok) {
     fallback = true;
     active_client = "NoopLlmClient";
+    model_ready = false;
     auto noop = make_noop_llm_client();
     mapped = noop->map_fields(msg, sample_form, make_sample_profile());
     sample_mapping_ok = mapping_ok(mapped);
-    append_event("warn", "llm_fallback", "Ollama sample mapping failed validation, using NoopLlmClient");
+    warning = "Ollama sample mapping failed validation; using rule-based mapping";
+    next_action = "Check model JSON-mode behavior or try another local model";
+    nlohmann::json data = {{"model", cfg.llm.model}, {"endpoint", cfg.llm.endpoint}};
+    append_event("warn", "llm_fallback", "Ollama sample mapping failed validation, using NoopLlmClient", data);
   }
 
   nlohmann::json mapped_fields = nlohmann::json::object();
@@ -974,25 +1084,40 @@ std::string app::test_llm_json() {
     };
   }
 
+  bool ok = sample_mapping_ok && analysis.kind == message_kind::form_request;
+  if (cfg.llm.enabled && fallback && !cfg.llm.auto_fallback_to_noop) ok = false;
+  if (cfg.llm.enabled && !fallback && total_duration_ms > 60000.0) {
+    warning = "Ollama is working but slow on CPU; consider a smaller model or higher timeout.";
+  }
+
   nlohmann::json out = {
-      {"ok", sample_mapping_ok && analysis.kind == message_kind::form_request},
+      {"ok", ok},
       {"enabled", cfg.llm.enabled},
       {"provider", cfg.llm.enabled ? cfg.llm.provider : "noop"},
       {"active_client", active_client},
       {"model", cfg.llm.model},
       {"endpoint", cfg.llm.endpoint},
       {"reachable", reachable},
+      {"model_ready", model_ready},
       {"fallback", fallback},
+      {"auto_fallback_to_noop", cfg.llm.auto_fallback_to_noop},
+      {"timeout_seconds", cfg.llm.timeout_seconds},
+      {"healthcheck_timeout_seconds", cfg.llm.healthcheck_timeout_seconds},
+      {"total_duration_ms", total_duration_ms},
       {"sample_classification", message_kind_name(analysis.kind)},
       {"sample_mapping_ok", sample_mapping_ok},
+      {"sample_mapping_source", "NoopLlmClient deterministic sample"},
       {"mapped_count", mapped_count},
       {"needs_input_count", needs_input_count},
       {"invalid_json_count", 0},
       {"invalid_schema_count", 0},
-      {"last_llm_error", (cfg.llm.enabled && !reachable) ? err : ""},
+      {"last_llm_error", (cfg.llm.enabled && (!reachable || !model_ready)) ? err : ""},
       {"fallback_used", fallback},
+      {"warning", warning},
+      {"next_action", next_action},
+      {"memory", llm_memory_json(cfg.llm, total_memory_gb)},
       {"mapped_fields", mapped_fields},
-      {"error", (cfg.llm.enabled && !reachable) ? err : ""}
+      {"error", (cfg.llm.enabled && (!reachable || !model_ready)) ? err : ""}
   };
   return out.dump(2);
 }

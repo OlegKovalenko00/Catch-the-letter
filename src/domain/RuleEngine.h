@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Message.h"
 #include "Rule.h"

@@ -60,12 +60,20 @@ struct browser_worker_config {
 };
 
 struct llm_config {
-  bool enabled = false;
+  bool enabled = true;
   std::string provider = "ollama";
   std::string endpoint = "http://127.0.0.1:11434/api/chat";
+  std::string endpoint_env = "LLM_ENDPOINT";
   std::string model = "qwen3:4b";
+  std::string model_env = "LLM_MODEL";
   std::string privacy_mode = "safe";
-  int timeout_seconds = 120;
+  int timeout_seconds = 300;
+  int healthcheck_timeout_seconds = 30;
+  bool auto_fallback_to_noop = true;
+  bool auto_pull = true;
+  bool startup_probe = true;
+  double min_memory_gb = 6.0;
+  double recommended_memory_gb = 8.0;
 };
 
 struct security_config {

@@ -6,6 +6,7 @@ services:
       BROWSER_WORKER_ENDPOINT: http://127.0.0.1:8090
       WEB_HOST: ${WEB_HOST:-127.0.0.1}
       TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-http://127.0.0.1:10809}
+      LLM_ENDPOINT: http://127.0.0.1:11434/api/chat
     depends_on:
       - browser-worker
 

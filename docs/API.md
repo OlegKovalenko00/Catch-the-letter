@@ -303,16 +303,31 @@ Missing credentials are reported as skipped/error without crashing. Gmail XOAUTH
 
 `POST /api/test/llm`
 
-Checks Noop or Ollama endpoint/JSON mode and sample mapping:
+Checks Noop or Ollama endpoint/JSON mode, memory requirements and sample mapping. `ok` can be `true` while `fallback=true` when Noop fallback works:
 
 ```json
 {
   "ok": true,
-  "enabled": false,
-  "provider": "noop",
-  "active_client": "NoopLlmClient",
-  "reachable": false,
+  "enabled": true,
+  "provider": "ollama",
+  "active_client": "OllamaClient",
+  "model": "qwen3:4b",
+  "endpoint": "http://127.0.0.1:11434/api/chat",
+  "reachable": true,
+  "model_ready": true,
   "fallback": false,
+  "timeout_seconds": 300,
+  "healthcheck_timeout_seconds": 30,
+  "total_duration_ms": 55002,
+  "warning": "",
+  "next_action": "",
+  "memory": {
+    "detected": true,
+    "total_gb": 15.4,
+    "min_required_gb": 6,
+    "recommended_gb": 8,
+    "sufficient": true
+  },
   "sample_classification": "form_request",
   "sample_mapping_ok": true,
   "mapped_fields": {

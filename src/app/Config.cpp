@@ -69,6 +69,13 @@ static bool get_bool(const json& obj, const char* key, bool def) {
   return def;
 }
 
+static bool parse_bool_text(const std::string& text, bool def) {
+  std::string v = to_lower(text);
+  if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
+  if (v == "0" || v == "false" || v == "no" || v == "off") return false;
+  return def;
+}
+
 static std::string json_to_string(const json& value, const std::string& def = "") {
   if (value.is_string()) return value.get<std::string>();
   if (value.is_number_integer()) return std::to_string(value.get<long long>());
@@ -103,6 +110,31 @@ static std::string get_env_value(const json& obj, const char* key) {
 static void apply_env_override(std::string& target, const char* key) {
   const char* value = std::getenv(key);
   if (value && std::string(value).empty() == false) target = value;
+}
+
+static void apply_env_override(bool& target, const char* key) {
+  const char* value = std::getenv(key);
+  if (value && std::string(value).empty() == false) target = parse_bool_text(value, target);
+}
+
+static void apply_env_override(int& target, const char* key) {
+  const char* value = std::getenv(key);
+  if (value && std::string(value).empty() == false) {
+    try {
+      target = std::stoi(value);
+    } catch (...) {
+    }
+  }
+}
+
+static void apply_env_override(double& target, const char* key) {
+  const char* value = std::getenv(key);
+  if (value && std::string(value).empty() == false) {
+    try {
+      target = std::stod(value);
+    } catch (...) {
+    }
+  }
 }
 
 static void apply_provider_preset(imap_config& cfg) {
@@ -233,9 +265,34 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.llm.enabled = get_bool(llm, "enabled", out.llm.enabled);
   out.llm.provider = get_string(llm, "provider", out.llm.provider);
   out.llm.endpoint = get_string(llm, "endpoint", out.llm.endpoint);
+  out.llm.endpoint_env = get_string(llm, "endpoint_env", out.llm.endpoint_env);
+  if (out.llm.endpoint_env.empty()) out.llm.endpoint_env = "LLM_ENDPOINT";
   out.llm.model = get_string(llm, "model", out.llm.model);
+  out.llm.model_env = get_string(llm, "model_env", out.llm.model_env);
+  if (out.llm.model_env.empty()) out.llm.model_env = "LLM_MODEL";
   out.llm.privacy_mode = get_string(llm, "privacy_mode", out.llm.privacy_mode);
   out.llm.timeout_seconds = get_int(llm, "timeout_seconds", out.llm.timeout_seconds);
+  out.llm.healthcheck_timeout_seconds =
+      get_int(llm, "healthcheck_timeout_seconds", out.llm.healthcheck_timeout_seconds);
+  out.llm.auto_fallback_to_noop =
+      get_bool(llm, "auto_fallback_to_noop", out.llm.auto_fallback_to_noop);
+  out.llm.auto_pull = get_bool(llm, "auto_pull", out.llm.auto_pull);
+  out.llm.startup_probe = get_bool(llm, "startup_probe", out.llm.startup_probe);
+  if (llm.contains("min_memory_gb") && llm["min_memory_gb"].is_number()) {
+    out.llm.min_memory_gb = llm["min_memory_gb"].get<double>();
+  }
+  if (llm.contains("recommended_memory_gb") && llm["recommended_memory_gb"].is_number()) {
+    out.llm.recommended_memory_gb = llm["recommended_memory_gb"].get<double>();
+  }
+  apply_env_override(out.llm.enabled, "LLM_ENABLED");
+  apply_env_override(out.llm.provider, "LLM_PROVIDER");
+  apply_env_override(out.llm.endpoint, out.llm.endpoint_env.c_str());
+  apply_env_override(out.llm.model, out.llm.model_env.c_str());
+  apply_env_override(out.llm.timeout_seconds, "LLM_TIMEOUT_SECONDS");
+  apply_env_override(out.llm.healthcheck_timeout_seconds, "LLM_HEALTHCHECK_TIMEOUT_SECONDS");
+  apply_env_override(out.llm.auto_fallback_to_noop, "LLM_AUTO_FALLBACK");
+  apply_env_override(out.llm.auto_pull, "LLM_AUTO_PULL");
+  apply_env_override(out.llm.min_memory_gb, "LLM_MIN_MEMORY_GB");
 
   const json security = root.value("security", json::object());
   out.security.mode = get_string(security, "mode", out.security.mode);

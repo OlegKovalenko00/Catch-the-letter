@@ -1,4 +1,4 @@
-﻿#include "MailClient.h"
+#include "MailClient.h"
 
 #include <string>
 #include <vector>

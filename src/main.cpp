@@ -1,4 +1,4 @@
-﻿#include "app/App.h"
+#include "app/App.h"
 #include "app/Config.h"
 #include "infra/HttpServer.h"
 #include "infra/BrowserWorkerClient.h"
@@ -127,7 +127,7 @@ static void localize_example_paths(app_config& cfg, const std::string& config_pa
   if (!browser_override && cfg.browser_worker.endpoint == "http://browser-worker:8090") {
     cfg.browser_worker.endpoint = "http://127.0.0.1:8090";
   }
-  const char* llm_override = std::getenv("OLLAMA_ENDPOINT");
+  const char* llm_override = std::getenv("LLM_ENDPOINT");
   if (!llm_override && cfg.llm.endpoint == "http://ollama:11434/api/chat") {
     cfg.llm.endpoint = "http://127.0.0.1:11434/api/chat";
   }

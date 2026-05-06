@@ -67,6 +67,121 @@ bool is_opinion_field(const form_field& field) {
          text.find("выберите") != std::string::npos;
 }
 
+std::string ollama_tags_url(std::string endpoint) {
+  const std::string suffix = "/api/chat";
+  auto pos = endpoint.rfind(suffix);
+  if (pos != std::string::npos && pos + suffix.size() == endpoint.size()) {
+    endpoint.replace(pos, suffix.size(), "/api/tags");
+    return endpoint;
+  }
+  auto api_pos = endpoint.find("/api/");
+  if (api_pos != std::string::npos) return endpoint.substr(0, api_pos) + "/api/tags";
+  while (!endpoint.empty() && endpoint.back() == '/') endpoint.pop_back();
+  return endpoint + "/api/tags";
+}
+
+bool curl_get_json(const std::string& url, int timeout_seconds, json& response, std::string& err, long* status = nullptr) {
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    err = "curl init failed";
+    return false;
+  }
+  std::string body;
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(std::max(1, timeout_seconds)));
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  CURLcode rc = curl_easy_perform(curl);
+  long code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+  curl_easy_cleanup(curl);
+  if (status) *status = code;
+  if (rc != CURLE_OK) {
+    err = curl_easy_strerror(rc);
+    return false;
+  }
+  if (code < 200 || code >= 300) {
+    std::ostringstream ss;
+    ss << "ollama HTTP " << code;
+    err = ss.str();
+    return false;
+  }
+  try {
+    response = json::parse(body.empty() ? "{}" : body);
+    err.clear();
+    return true;
+  } catch (const std::exception& e) {
+    err = std::string("ollama JSON parse failed: ") + e.what();
+    return false;
+  }
+}
+
+bool curl_post_chat(const llm_config& cfg,
+                    const std::string& system_prompt,
+                    const std::string& user_prompt,
+                    int timeout_seconds,
+                    int num_predict,
+                    json& response,
+                    std::string& err,
+                    long* status = nullptr) {
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    err = "curl init failed";
+    return false;
+  }
+  json req = {
+      {"model", cfg.model},
+      {"stream", false},
+      {"format", "json"},
+      {"think", false},
+      {"options", {{"temperature", 0}, {"num_predict", std::max(32, num_predict)}}},
+      {"messages", json::array({
+          {{"role", "system"}, {"content", system_prompt}},
+          {{"role", "user"}, {"content", user_prompt}}
+      })}
+  };
+  std::string payload = req.dump();
+  std::string body;
+  struct curl_slist* headers = nullptr;
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+  curl_easy_setopt(curl, CURLOPT_URL, cfg.endpoint.c_str());
+  curl_easy_setopt(curl, CURLOPT_POST, 1L);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(std::max(1, timeout_seconds)));
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+  CURLcode rc = curl_easy_perform(curl);
+  long code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+  if (status) *status = code;
+  if (rc != CURLE_OK) {
+    err = curl_easy_strerror(rc);
+    return false;
+  }
+  if (code < 200 || code >= 300) {
+    std::ostringstream ss;
+    ss << "ollama HTTP " << code;
+    err = ss.str();
+    return false;
+  }
+  try {
+    response = json::parse(body.empty() ? "{}" : body);
+    err.clear();
+    return true;
+  } catch (const std::exception& e) {
+    err = std::string("ollama JSON parse failed: ") + e.what();
+    return false;
+  }
+}
+
 class ollama_client final : public llm_client {
 public:
   explicit ollama_client(llm_config cfg) : cfg(std::move(cfg)), fallback(make_noop_llm_client()) {}
@@ -253,57 +368,15 @@ private:
   }
 
   bool chat(const std::string& prompt, json& response, std::string& err) const {
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-      err = "curl init failed";
-      return false;
-    }
-
-    json req = {
-        {"model", cfg.model},
-        {"stream", false},
-        {"format", "json"},
-        {"messages", json::array({
-            {{"role", "system"}, {"content", "Ты локальный помощник. Возвращай только JSON."}},
-            {{"role", "user"}, {"content", prompt}}
-        })}
-    };
-    std::string payload = req.dump();
-    std::string body;
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    curl_easy_setopt(curl, CURLOPT_URL, cfg.endpoint.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(cfg.timeout_seconds));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-
-    CURLcode rc = curl_easy_perform(curl);
-    long code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
-      err = curl_easy_strerror(rc);
-      return false;
-    }
-    if (code < 200 || code >= 300) {
-      std::ostringstream ss;
-      ss << "ollama HTTP " << code;
-      err = ss.str();
-      return false;
-    }
-    try {
-      response = json::parse(body);
-      return true;
-    } catch (const std::exception& e) {
-      err = std::string("ollama JSON parse failed: ") + e.what();
-      return false;
-    }
+    return curl_post_chat(
+        cfg,
+        "Return compact JSON only. Do not include explanations. Do not include thinking. Keep response short.",
+        prompt,
+        cfg.timeout_seconds,
+        1024,
+        response,
+        err
+    );
   }
 
   llm_config cfg;
@@ -316,59 +389,61 @@ std::unique_ptr<llm_client> make_ollama_client(const llm_config& cfg) {
   return std::make_unique<ollama_client>(cfg);
 }
 
-bool test_ollama_endpoint(const llm_config& cfg, std::string& err) {
-  CURL* curl = curl_easy_init();
-  if (!curl) {
-    err = "curl init failed";
-    return false;
-  }
-  json req = {
-      {"model", cfg.model},
-      {"stream", false},
-      {"format", "json"},
-      {"messages", json::array({
-          {{"role", "system"}, {"content", "Return JSON only."}},
-          {{"role", "user"}, {"content", "{\"ping\":true}"}}
-      })}
-  };
-  std::string payload = req.dump();
-  std::string body;
-  struct curl_slist* headers = nullptr;
-  headers = curl_slist_append(headers, "Content-Type: application/json");
-  curl_easy_setopt(curl, CURLOPT_URL, cfg.endpoint.c_str());
-  curl_easy_setopt(curl, CURLOPT_POST, 1L);
-  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(std::max(1, cfg.timeout_seconds)));
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+bool test_ollama_health(const llm_config& cfg, std::string& err) {
+  json response;
+  long status = 0;
+  return curl_get_json(ollama_tags_url(cfg.endpoint), cfg.healthcheck_timeout_seconds, response, err, &status);
+}
 
-  CURLcode rc = curl_easy_perform(curl);
-  long code = 0;
-  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-  curl_slist_free_all(headers);
-  curl_easy_cleanup(curl);
-  if (rc != CURLE_OK) {
-    err = curl_easy_strerror(rc);
-    return false;
+ollama_probe_result probe_ollama_endpoint(const llm_config& cfg) {
+  ollama_probe_result result;
+  result.timeout_seconds = cfg.timeout_seconds;
+  result.healthcheck_timeout_seconds = cfg.healthcheck_timeout_seconds;
+
+  json tags;
+  std::string err;
+  long status = 0;
+  if (!curl_get_json(ollama_tags_url(cfg.endpoint), cfg.healthcheck_timeout_seconds, tags, err, &status)) {
+    result.http_status = status;
+    result.error = err;
+    return result;
   }
-  if (code < 200 || code >= 300) {
-    std::ostringstream ss;
-    ss << "ollama HTTP " << code;
-    err = ss.str();
-    return false;
+  result.reachable = true;
+
+  json response;
+  status = 0;
+  if (!curl_post_chat(
+          cfg,
+          "Return compact JSON only. Do not include explanations. Do not include thinking. Keep response short.",
+          "{\"ping\":true}",
+          cfg.timeout_seconds,
+          64,
+          response,
+          err,
+          &status
+      )) {
+    result.http_status = status;
+    result.error = err;
+    return result;
+  }
+  result.http_status = status;
+  if (response.contains("total_duration") && response["total_duration"].is_number()) {
+    result.total_duration_ms = response["total_duration"].get<double>() / 1000000.0;
   }
   try {
-    json response = json::parse(body.empty() ? "{}" : body);
     std::string content = response.at("message").at("content").get<std::string>();
     auto parsed_content = json::parse(content.empty() ? "{}" : content);
     (void)parsed_content;
+    result.model_ready = true;
+    result.error.clear();
   } catch (const std::exception& e) {
-    err = std::string("ollama JSON-mode probe failed: ") + e.what();
-    return false;
+    result.error = std::string("ollama JSON-mode probe failed: ") + e.what();
   }
-  err.clear();
-  return true;
+  return result;
+}
+
+bool test_ollama_endpoint(const llm_config& cfg, std::string& err) {
+  auto result = probe_ollama_endpoint(cfg);
+  err = result.error;
+  return result.reachable && result.model_ready;
 }

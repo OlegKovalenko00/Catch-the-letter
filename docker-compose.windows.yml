@@ -1,0 +1,37 @@
+# Docker Compose override for Windows 10/11 + Docker Desktop
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.windows.yml up --build
+#   docker compose -f docker-compose.yml -f docker-compose.windows.yml --profile llm up --build
+#
+# Network:
+#   - Uses Docker bridge (not network_mode: host)
+#   - host.docker.internal allows access to Windows localhost services
+#   - Web UI: http://127.0.0.1:8080
+#   - Browser Worker: http://127.0.0.1:8090
+#
+# LLM (Ollama):
+#   - Native Ollama on Windows localhost: LLM_ENDPOINT=http://host.docker.internal:11434/api/chat
+#   - Docker Ollama service: LLM_ENDPOINT=http://ollama:11434/api/chat
+#
+# Telegram Proxy:
+#   - If proxy needed on Windows localhost: TELEGRAM_PROXY_URL=http://host.docker.internal:10809
+
+services:
+  app:
+    environment:
+      # For Windows: host.docker.internal to reach Windows services
+      BROWSER_WORKER_ENDPOINT: http://browser-worker:8090
+      TELEGRAM_PROXY_URL: ${TELEGRAM_PROXY_URL:-}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-http://host.docker.internal:11434/api/chat}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  browser-worker:
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  ollama:
+    profiles:
+      - llm
+    ports:
+      - "127.0.0.1:11434:11434"

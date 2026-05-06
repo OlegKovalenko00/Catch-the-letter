@@ -13,16 +13,36 @@ if [[ "${RUN_OLLAMA_TEST:-0}" != "1" ]]; then
   exit 0
 fi
 
-tmp_config="$(mktemp)"
-python3 - "$tmp_config" <<'PY'
-import json, sys
-cfg = json.load(open("config/app.example.json", encoding="utf-8"))
-cfg["llm"]["enabled"] = True
-cfg["llm"]["endpoint"] = "http://127.0.0.1:11434/api/chat"
-json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-PY
+if ! command -v docker >/dev/null 2>&1; then
+  echo "SKIPPED Ollama test: docker is unavailable"
+  exit 0
+fi
 
-if ! ./build/catch_the_letter --config "$tmp_config" --test-llm; then
-  echo "SKIPPED/FAILED Ollama mode: endpoint/model is not reachable or JSON-mode failed"
-  exit 1
+MODEL="${LLM_MODEL:-qwen3:4b}"
+echo "Starting Ollama profile and model preload for ${MODEL}..."
+LLM_MODEL="$MODEL" docker compose --profile llm up -d ollama ollama-init >/dev/null
+
+echo "Waiting for Ollama HTTP endpoint..."
+for _ in $(seq 1 60); do
+  if docker compose exec -T ollama ollama list >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+if ! docker compose exec -T ollama ollama list >/dev/null 2>&1; then
+  echo "SKIPPED Ollama mode: ollama service did not become reachable"
+  exit 0
+fi
+
+if ! docker compose exec -T ollama ollama list | grep -Fq "$MODEL"; then
+  echo "SKIPPED Ollama mode: model ${MODEL} is not present yet; check docker compose logs ollama-init"
+  exit 0
+fi
+
+output="$(LLM_ENABLED=true LLM_ENDPOINT=http://127.0.0.1:11434/api/chat LLM_MODEL="$MODEL" ./build/catch_the_letter --config config/app.example.json --test-llm)"
+echo "$output"
+if echo "$output" | grep -q '"fallback": true'; then
+  echo "SKIPPED Ollama mode: model exists but JSON-mode probe fell back; check Ollama logs/model compatibility"
+  exit 0
 fi

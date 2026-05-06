@@ -22,7 +22,7 @@ IMAP mailbox(es)
 - `BrowserWorkerClient`: JSON HTTP client for the browser-worker.
 - `TelegramDialogManager`: polling, callbacks, guided missing-field answers, batch edit fallback, Remap callback, 2FA dialog flow.
 - `HttpServer`: local Web UI static file serving plus REST API. It loads `web/index.html`, `web/app.js`, and `web/styles.css` from `/app/web` in Docker or `./web` in local runs, with a tiny fallback page if files are missing.
-- `OllamaClient` / `NoopLlmClient`: local optional LLM and deterministic fallback.
+- `OllamaClient` / `NoopLlmClient`: local Ollama-first LLM layer with deterministic fallback when Ollama/model/resources are unavailable.
 - `SqliteStorage`: checkpoints, dedup, active sessions, Telegram dialogs, event log, runtime keys.
 
 ## Field Mapping Pipeline
@@ -46,6 +46,8 @@ Mapping order:
 7. Final fillability validation reports missing required, invalid options, unsupported required fields and warnings.
 
 `Remap with AI` reruns mapping but preserves fields edited by the user. `Validate` checks missing required fields, invalid options and unsupported required controls before fill.
+
+The default config enables Ollama with `qwen3:4b`, but startup and `/api/test/llm` perform best-effort resource and JSON-mode probes. If RAM is below `llm.min_memory_gb`, the endpoint is unavailable, or the model is still pulling, the app reports `llm_fallback` and continues with Noop. Docker profile `llm` includes `ollama-init` to preload the configured model.
 
 ## Workflow Statuses
 
@@ -122,3 +124,51 @@ waiting_auth
 ## Browser Worker
 
 The worker extracts generic HTML fields and best-effort Google/Yandex/Microsoft/HSE/LMS-like question blocks. It supports text inputs, textarea, select, checkbox, radio groups, checkbox groups, auth credentials, one-time code screens, multi-page next buttons, submit buttons, screenshots, and best-effort session cleanup.
+
+## OS and Network Modes
+
+| Mode | OS | Network | App | Browser-Worker | Telegram Proxy | Ollama |
+|------|----|---------|----|-----------------|---|---------|
+| **Linux Normal** | Linux | Docker bridge | bridge | bridge, `127.0.0.1:8090` | N/A | Docker service `ollama:11434/api/chat` |
+| **Linux VPN/Proxy** | Linux | Host network | `network_mode: host` | bridge, `127.0.0.1:8090` | `http://127.0.0.1:10809` (optional) | Localhost `http://127.0.0.1:11434/api/chat` |
+| **Windows Native Ollama** | Windows | Docker bridge | bridge | bridge, `127.0.0.1:8090` | `http://host.docker.internal:10809` (optional) | Windows native `http://host.docker.internal:11434/api/chat` |
+| **Windows Docker Ollama** | Windows | Docker bridge | bridge | bridge, `127.0.0.1:8090` | `http://host.docker.internal:10809` (optional) | Docker service `ollama:11434/api/chat` |
+
+### Environment Settings by Mode
+
+**Linux Normal**:
+```env
+LLM_ENDPOINT=http://ollama:11434/api/chat
+TELEGRAM_PROXY_URL=
+```
+```bash
+docker compose --profile llm up --build
+```
+
+**Linux VPN/Proxy**:
+```env
+LLM_ENDPOINT=http://127.0.0.1:11434/api/chat
+TELEGRAM_PROXY_URL=http://127.0.0.1:10809
+```
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml --profile llm up --build
+```
+
+**Windows Native Ollama**:
+```env
+LLM_ENDPOINT=http://host.docker.internal:11434/api/chat
+TELEGRAM_PROXY_URL=http://host.docker.internal:10809
+```
+```powershell
+.\scripts\windows\start-llm-native.ps1
+```
+
+**Windows Docker Ollama**:
+```env
+LLM_ENDPOINT=http://ollama:11434/api/chat
+TELEGRAM_PROXY_URL=http://host.docker.internal:10809
+```
+```powershell
+$env:LLM_ENDPOINT="http://ollama:11434/api/chat"
+.\scripts\windows\start-llm-docker.ps1
+```

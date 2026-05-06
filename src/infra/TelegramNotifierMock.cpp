@@ -1,4 +1,4 @@
-﻿#include "TelegramNotifier.h"
+#include "TelegramNotifier.h"
 
 #include <iostream>
 #include <string>

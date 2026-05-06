@@ -41,12 +41,20 @@
     "timeout_seconds": 60
   },
   "llm": {
-    "enabled": false,
+    "enabled": true,
     "provider": "ollama",
     "endpoint": "http://ollama:11434/api/chat",
+    "endpoint_env": "LLM_ENDPOINT",
     "model": "qwen3:4b",
+    "model_env": "LLM_MODEL",
     "privacy_mode": "safe",
-    "timeout_seconds": 120
+    "timeout_seconds": 300,
+    "auto_fallback_to_noop": true,
+    "healthcheck_timeout_seconds": 30,
+    "startup_probe": true,
+    "min_memory_gb": 6,
+    "recommended_memory_gb": 8,
+    "auto_pull": true
   },
   "auth": {
     "enabled": true,

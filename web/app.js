@@ -254,6 +254,27 @@
     const browser = status.browser_worker || {};
     const telegram = status.telegram || {};
     const llm = status.llm || {};
+    const llmTest = state.tests.llm || null;
+    let llmCardStatus = llm.enabled ? "warning" : "skipped";
+    let llmCardValue = llm.enabled ? `${llm.provider || "ollama"} / ${llm.model || ""}` : "LLM disabled";
+    let llmCardDetail = llm.enabled
+      ? `Run Test LLM. Endpoint: ${llm.endpoint || "not configured"}`
+      : "Rule-based Noop mapping active. Set LLM_ENABLED=true to try Ollama.";
+    if (llmTest) {
+      if (llmTest.active_client === "OllamaClient" && !llmTest.fallback) {
+        llmCardStatus = "ok";
+        llmCardValue = `LLM OK / ${llmTest.model || llm.model || ""}`;
+        llmCardDetail = `Ollama ready. Memory: ${llmTest.memory?.total_gb ? Number(llmTest.memory.total_gb).toFixed(1) + "GB" : "unknown"}`;
+      } else if (llmTest.enabled && llmTest.fallback) {
+        llmCardStatus = "warning";
+        llmCardValue = "LLM FALLBACK / Noop";
+        llmCardDetail = llmTest.warning || llmTest.next_action || "Ollama unavailable; rule-based mapping active.";
+      } else if (!llmTest.enabled) {
+        llmCardStatus = "skipped";
+        llmCardValue = "LLM DISABLED / Noop";
+        llmCardDetail = llmTest.next_action || "Rule-based mapping active.";
+      }
+    }
     const cards = [
       {
         title: "Mail",
@@ -275,9 +296,9 @@
       },
       {
         title: "LLM",
-        status: llm.enabled ? "ok" : "skipped",
-        value: llm.enabled ? `${llm.provider || "ollama"} / ${llm.model || ""}` : "Noop fallback",
-        detail: llm.endpoint || "Rule-based mapping active."
+        status: llmCardStatus,
+        value: llmCardValue,
+        detail: llmCardDetail
       },
       {
         title: "Active forms",
@@ -367,6 +388,7 @@
     $("#fill-button").hidden = form.status !== "waiting_user_review";
     $("#save-fields-button").disabled = !["waiting_user_review", "waiting_submit_confirm"].includes(form.status);
     $("#remap-button").disabled = form.status !== "waiting_user_review";
+    $("#remap-button").textContent = llmUsesOllama() ? "Remap with AI" : "Remap with rules";
     $("#validate-button").disabled = !form.fields?.length;
 
     renderAuthCard(form);
@@ -499,6 +521,12 @@
     if (source === "user") return "ok";
     if (source === "rule" || source === "profile") return "neutral";
     return "muted";
+  }
+
+  function llmUsesOllama() {
+    const test = state.tests.llm;
+    if (test) return test.active_client === "OllamaClient" && !test.fallback;
+    return Boolean(state.status?.llm?.enabled);
   }
 
   function semanticWarningForField(field) {

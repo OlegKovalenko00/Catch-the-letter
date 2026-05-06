@@ -2,7 +2,7 @@
 
 Catch the Letter watches new IMAP mail, detects important messages and form links, opens forms in a Playwright browser-worker, proposes field values from `profile.json`, lets you review/edit them in Web UI or Telegram, fills the form, and submits only after explicit confirmation.
 
-The app works without paid APIs. Field mapping uses deterministic rules and `NoopLlmClient` by default. Local Ollama can be enabled for better semantic mapping.
+The app works without paid APIs. Local Ollama is enabled by default for better semantic mapping, but every LLM call has a deterministic `NoopLlmClient` fallback, so the service still works when Ollama or the model is unavailable.
 
 ## Quick Start
 
@@ -22,6 +22,13 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_PROXY_URL=
 WEB_AUTH_TOKEN=
+LLM_ENABLED=true
+LLM_MODEL=qwen3:4b
+LLM_ENDPOINT=http://ollama:11434/api/chat
+LLM_TIMEOUT_SECONDS=300
+LLM_HEALTHCHECK_TIMEOUT_SECONDS=30
+LLM_AUTO_PULL=true
+LLM_AUTO_FALLBACK=true
 ```
 
 Fill `config/profile.json`, then run:
@@ -38,6 +45,122 @@ http://127.0.0.1:8080
 
 The Web UI has buttons for Test Browser, Test Telegram, Test IMAP, Test LLM, Create Demo Form, Create Demo Auth Form, and Manual / Yandex Form Test.
 The UI is served from `web/index.html`, `web/app.js`, and `web/styles.css`; Docker copies these files into `/app/web`.
+
+## Windows 10/11 + Docker Desktop
+
+Prerequisites:
+
+- Docker Desktop with WSL2 backend
+- Git for Windows
+- PowerShell 5.0+
+- Optional: Ollama for Windows for native GPU LLM (recommended for powerful machines)
+
+### Setup
+
+```powershell
+.\scripts\windows\setup.ps1
+notepad .env
+notepad config\profile.json
+```
+
+The script creates `.env`, `config/app.json`, `config/rules.json`, `config/profile.json` from examples.
+
+### Mode A: Basic (no Docker Ollama)
+
+```powershell
+.\scripts\windows\start.ps1
+```
+
+Access: `http://127.0.0.1:8080`
+
+### Mode B: With Native Ollama (recommended for powerful PC)
+
+Prerequisites:
+
+1. Install Ollama for Windows from `https://ollama.ai`
+2. Keep Ollama running on Windows
+3. Pull the model: `ollama pull qwen3:4b`
+
+Set `.env`:
+
+```env
+LLM_ENABLED=true
+LLM_MODEL=qwen3:4b
+LLM_ENDPOINT=http://host.docker.internal:11434/api/chat
+LLM_TIMEOUT_SECONDS=300
+```
+
+Start:
+
+```powershell
+.\scripts\windows\start-llm-native.ps1
+```
+
+Access: `http://127.0.0.1:8080`
+
+### Mode C: With Docker Ollama
+
+```powershell
+$env:LLM_ENDPOINT="http://ollama:11434/api/chat"
+.\scripts\windows\start-llm-docker.ps1
+```
+
+Access: `http://127.0.0.1:8080`
+
+### Tests
+
+```powershell
+.\scripts\windows\test.ps1
+.\scripts\windows\test-ollama.ps1
+```
+
+### Stop
+
+```powershell
+.\scripts\windows\stop.ps1
+```
+
+### Telegram Proxy on Windows
+
+If Telegram works directly, leave `TELEGRAM_PROXY_URL` empty in `.env`.
+
+If you have a VPN/proxy running on Windows localhost (e.g., `127.0.0.1:10809`), set:
+
+```env
+TELEGRAM_PROXY_URL=http://host.docker.internal:10809
+```
+
+Do not use `127.0.0.1:10809` from inside Docker bridge; use `host.docker.internal` instead.
+
+### Troubleshooting on Windows
+
+- Docker Desktop not running: start Docker Desktop.
+- WSL2 disabled: enable in Windows Features.
+- Port 8080 already in use: stop other services or change firewall.
+- Ollama native not reachable from Docker: ensure Ollama is running, check `http://127.0.0.1:11434/api/tags` on Windows.
+- `host.docker.internal` timeout: try with Docker Ollama service or disable LLM.
+- Telegram timeout: try `TELEGRAM_PROXY_URL=http://host.docker.internal:10809` or disable proxy.
+
+## Linux: Normal Mode
+
+```bash
+./scripts/linux/start.sh
+```
+
+This uses `docker compose --profile llm up --build` with Ollama inside Docker. Access: `http://127.0.0.1:8080`.
+
+## Linux: VPN / Proxy Mode
+
+If Telegram / Ollama require host network routing:
+
+```bash
+./scripts/linux/start-vpn.sh
+```
+
+This uses `docker-compose.vpn.yml` with `network_mode: host`. Requires:
+
+- Ollama running on `127.0.0.1:11434`
+- Telegram proxy on `127.0.0.1:10809` (if needed)
 
 ## Telegram Through VPN Or Proxy On Linux
 
@@ -205,34 +328,44 @@ Commands:
 - `/forms` — active forms list.
 - `/cancel` — clear the current Telegram dialog without cancelling active forms.
 
-## Ollama
+## Local LLM / Ollama By Default
 
-Default is Noop:
+`config/app.example.json` has `llm.enabled=true` and model `qwen3:4b`. If Ollama is not running, the model is still pulling, JSON mode fails, or the machine has less than the configured minimum RAM, the app does not crash. It reports `LLM FALLBACK` and uses rule-based Noop mapping.
 
-```json
-"llm": { "enabled": false }
-```
-
-To use Ollama:
+Ordinary Docker mode with automatic model preload:
 
 ```bash
-docker compose --profile llm up -d ollama
-docker compose exec ollama ollama pull qwen3:4b
+docker compose --profile llm up --build
 ```
 
-Then set:
+VPN/proxy host-network mode:
 
-```json
-"llm": {
-  "enabled": true,
-  "provider": "ollama",
-  "endpoint": "http://ollama:11434/api/chat",
-  "model": "qwen3:4b",
-  "privacy_mode": "safe"
-}
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml --profile llm up --build
 ```
 
-If Ollama is unavailable, the app logs `llm_fallback` and continues with Noop.
+The `ollama-init` service waits for Ollama and runs `ollama pull "$LLM_MODEL"` unless `LLM_AUTO_PULL=false`. Watch preload logs:
+
+```bash
+docker compose logs -f ollama-init
+docker compose logs -f ollama
+```
+
+Endpoint rules:
+
+```env
+# ordinary Docker bridge
+LLM_ENDPOINT=http://ollama:11434/api/chat
+
+# docker-compose.vpn.yml, app uses network_mode: host
+LLM_ENDPOINT=http://127.0.0.1:11434/api/chat
+```
+
+Memory guidance: `qwen3:4b` needs roughly 6GB minimum and 8GB recommended. `qwen3:8b` can give better answers but needs more RAM.
+
+CPU inference can be slow. The app uses a short `/api/tags` healthcheck timeout (`LLM_HEALTHCHECK_TIMEOUT_SECONDS`, default 30s) and a separate full chat timeout (`LLM_TIMEOUT_SECONDS`, default 300s) for `/api/chat`, form mapping and `Test LLM`.
+
+`Test LLM` reports `LLM OK`, `LLM FALLBACK`, or `LLM DISABLED`, including endpoint, model, memory check, fallback reason and next action. In fallback mode, `Remap with AI` becomes rule-based remap and the product remains usable.
 
 ## Security
 

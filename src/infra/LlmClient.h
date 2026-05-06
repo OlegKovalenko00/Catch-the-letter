@@ -6,6 +6,7 @@
 #include "../domain/UserProfile.h"
 
 #include <memory>
+#include <string>
 
 class llm_client {
 public:
@@ -18,4 +19,17 @@ public:
 
 std::unique_ptr<llm_client> make_noop_llm_client();
 std::unique_ptr<llm_client> make_ollama_client(const llm_config& cfg);
+
+struct ollama_probe_result {
+  bool reachable = false;
+  bool model_ready = false;
+  long http_status = 0;
+  int timeout_seconds = 0;
+  int healthcheck_timeout_seconds = 0;
+  double total_duration_ms = 0.0;
+  std::string error;
+};
+
+ollama_probe_result probe_ollama_endpoint(const llm_config& cfg);
+bool test_ollama_health(const llm_config& cfg, std::string& err);
 bool test_ollama_endpoint(const llm_config& cfg, std::string& err);
