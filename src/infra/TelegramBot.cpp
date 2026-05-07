@@ -110,7 +110,11 @@ bool telegram_bot::send_message(const std::string& text,
     for (const auto& row : inline_keyboard) {
       json buttons = json::array();
       for (const auto& button : row) {
-        buttons.push_back({{"text", button.text}, {"callback_data", button.callback_data}});
+        if (!button.url.empty()) {
+          buttons.push_back({{"text", button.text}, {"url", button.url}});
+        } else {
+          buttons.push_back({{"text", button.text}, {"callback_data", button.callback_data}});
+        }
       }
       rows.push_back(std::move(buttons));
     }

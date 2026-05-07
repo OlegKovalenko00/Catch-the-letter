@@ -66,7 +66,10 @@ bool has_confident_form_link(const message& msg) {
 }
 
 std::string field_title(const form_field& field) {
-  if (!field.label.empty()) return field.label;
+  // Use field_label() from FormUnderstandingEngine — strips blank invisible chars
+  // and falls back to api_question_id display for Yandex Forms.
+  std::string lbl = field_label(field);
+  if (!lbl.empty()) return lbl;
   if (!field.id.empty()) return field.id;
   return field.selector;
 }
@@ -164,13 +167,17 @@ void workflow_engine::notify_important(const message& msg, const email_analysis&
 
 std::optional<message_link> workflow_engine::choose_form_link(const message& msg,
                                                               const email_analysis& analysis) const {
+  // Minimum confidence to treat a URL as a fillable form.
+  // URLs like forms.yandex.ru/admin/ (response viewers) score 0.0 and are excluded.
+  constexpr double kMinConfidence = 0.5;
+
   if (!analysis.form_links.empty()) {
     auto best = std::max_element(
         analysis.form_links.begin(),
         analysis.form_links.end(),
         [](const message_link& a, const message_link& b) { return a.confidence < b.confidence; }
     );
-    return *best;
+    if (best->confidence >= kMinConfidence) return *best;
   }
   if (!msg.links.empty()) {
     auto best = std::max_element(
@@ -178,7 +185,7 @@ std::optional<message_link> workflow_engine::choose_form_link(const message& msg
         msg.links.end(),
         [](const message_link& a, const message_link& b) { return a.confidence < b.confidence; }
     );
-    return *best;
+    if (best->confidence >= kMinConfidence) return *best;
   }
   return std::nullopt;
 }
@@ -442,18 +449,23 @@ bool workflow_engine::start_form_workflow(const message& msg,
   }
 
   if (snapshot->captcha_required) {
-    session.status = "manual_required";
+    session.status = "captcha_required";
     session.captcha_required = true;
+    // keep browser session alive so user can interact and we can reinspect
     std::string id = store.create_form_session(session);
-    notify_manual("Captcha blocked form inspection. Open the original form manually:\n" + chosen->url);
+    auto saved = store.get_form_session(id);
+    if (saved) {
+      std::string send_err;
+      send_captcha_message(*saved, send_err);
+    }
     {
       json data = json::object();
       data["session_id"] = id;
       data["url"] = sanitize_url_for_log(chosen->url);
-      append_event("warning", "captcha_required", "Captcha blocked form inspect", data);
+      append_event("warning", "captcha_required", "Captcha detected, waiting for user to pass it", data);
     }
-    status = "manual_required";
-    return false;
+    status = "captcha_required";
+    return true;
   }
 
   if (snapshot->fields.empty()) {
@@ -613,6 +625,24 @@ bool workflow_engine::create_demo_session(const std::string& url,
       json data = json::object();
       data["session_id"] = id;
       append_event("info", "waiting_auth", "Demo auth form created", data);
+    }
+    err.clear();
+    return true;
+  }
+
+  if (snapshot->captcha_required) {
+    session.status = "captcha_required";
+    session.captcha_required = true;
+    std::string id = store.create_form_session(session);
+    auto saved = store.get_form_session(id);
+    if (saved) {
+      std::string send_err;
+      send_captcha_message(*saved, send_err);
+    }
+    {
+      json data = json::object();
+      data["session_id"] = id;
+      append_event("warning", "captcha_required", "Demo captcha session created", data);
     }
     err.clear();
     return true;
@@ -1068,4 +1098,133 @@ bool workflow_engine::test_telegram(std::string& err) {
 
 void workflow_engine::set_profile(user_profile next_profile) {
   profile = std::move(next_profile);
+}
+
+std::string workflow_engine::web_base_url() const {
+  std::string base = cfg.http.web_public_base_url.empty()
+      ? "http://127.0.0.1:" + std::to_string(cfg.http.port)
+      : cfg.http.web_public_base_url;
+  while (!base.empty() && base.back() == '/') base.pop_back();
+  return base;
+}
+
+bool workflow_engine::send_captcha_message(const form_session& session, std::string& err) {
+  std::string base = web_base_url();
+
+  std::string captcha_url = base + "/forms/" + session.id + "/captcha";
+  std::string web_ui_url = base;
+  if (!cfg.http.auth_token.empty()) {
+    captcha_url += "?token=" + cfg.http.auth_token;
+    web_ui_url += "?token=" + cfg.http.auth_token;
+  }
+
+  std::string text =
+      "⚠️ Яндекс показал "
+      "проверку \"Вы не "
+      "робот\".\n"
+      "Я не буду считать "
+      "капчу полем формы.\n"
+      "Откройте проверку, "
+      "подтвердите, что "
+      "вы не робот, затем "
+      "нажмите \"Я "
+      "прошёл "
+      "проверку\". "
+      "После этого я "
+      "продолжу заполне"
+      "ние формы "
+      "автоматически.";
+
+  std::vector<std::vector<telegram_button>> buttons = {
+      {{"Открыть проверку", "", captcha_url},
+       {"Я прошёл проверку", "form:" + session.id + ":captcha_passed", ""}},
+      {{"Открыть Web UI", "", web_ui_url},
+       {"Открыть оригинал", "", session.form_url}},
+      {{"Отмена", "form:" + session.id + ":cancel", ""}}
+  };
+
+  if (cfg.telegram.captcha_remote_control_experimental) {
+    buttons.insert(buttons.begin() + 1,
+        {{"[Exp] Скриншот", "form:" + session.id + ":captcha_screenshot", ""}});
+  }
+
+  if (telegram && telegram->enabled()) return telegram->send_message(text, buttons, err);
+  std::cout << "[CAPTCHA] " << session.form_url << std::endl;
+  err.clear();
+  return true;
+}
+
+bool workflow_engine::reinspect_after_captcha(const std::string& session_id, std::string& err) {
+  auto session = store.get_form_session(session_id);
+  if (!session) {
+    err = "form session not found";
+    return false;
+  }
+  if (session->browser_session_id.empty()) {
+    err = "browser session is gone; open the form manually";
+    return false;
+  }
+
+  auto snapshot = browser.reinspect_form(session->browser_session_id, err);
+  if (!snapshot) {
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("error", "captcha_reinspect_failed", err, data);
+    }
+    return false;
+  }
+
+  if (snapshot->captcha_required) {
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("info", "captcha_still_required", "Captcha is still active", data);
+    }
+    std::string notify_err;
+    notify_text(
+        "Проверка всё ещё "
+        "активна. "
+        "Пройдите её в "
+        "открытой сессии "
+        "и попробуйте снова.",
+        notify_err);
+    err = "captcha is still active";
+    return false;
+  }
+
+  if (snapshot->fields.empty()) {
+    session->status = "manual_required";
+    session->captcha_required = false;
+    store.update_form_session(*session);
+    notify_manual(
+        "Проверка пройдена, "
+        "но поля формы не "
+        "найдены. "
+        "Откройте вручную:\n" +
+        session->form_url);
+    {
+      json data = json::object();
+      data["session_id"] = session_id;
+      append_event("warning", "captcha_passed_no_fields", "Captcha passed but no fields found", data);
+    }
+    err = "captcha passed but no fields found";
+    return false;
+  }
+
+  session->status = "waiting_user_review";
+  session->captcha_required = false;
+  session->extraction_strategy = "browser_dom";
+  session->form_type = snapshot->form_type;
+  session->title = snapshot->title.empty() ? session->title : snapshot->title;
+  session->fields = llm.map_fields(message{}, *snapshot, profile);
+  store.update_form_session(*session);
+  send_form_review(*session, err);
+  {
+    json data = json::object();
+    data["session_id"] = session_id;
+    append_event("info", "captcha_reinspect", "Captcha passed, form reinspected", data);
+  }
+  err.clear();
+  return true;
 }

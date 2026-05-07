@@ -12,17 +12,27 @@
     tests: {}
   };
 
-  const profileFields = [
-    ["full_name", "ФИО"],
-    ["hse_email", "HSE email"],
-    ["personal_email", "Personal email"],
-    ["phone", "Телефон"],
-    ["student_group", "Группа"],
-    ["faculty", "Факультет"],
-    ["programme", "Программа"],
-    ["course_year", "Курс"],
-    ["campus", "Кампус"]
-  ];
+  const profileKeyLabels = {
+    full_name: "ФИО",
+    last_name: "Фамилия",
+    first_name: "Имя",
+    middle_name: "Отчество",
+    hse_email: "Корп. почта HSE",
+    personal_email: "Личная почта",
+    phone: "Телефон",
+    student_group: "Учебная группа",
+    faculty: "Факультет",
+    programme: "Программа",
+    course_year: "Курс",
+    campus: "Кампус",
+    education_level: "Уровень образования",
+    student_id: "Номер студ. билета",
+    sex: "Пол",
+    birth_date: "Дата рождения",
+    nationality: "Гражданство",
+    department: "Кафедра / отдел"
+  };
+  const profileKeyOrder = Object.keys(profileKeyLabels);
 
   const statusLabels = {
     waiting_user_review: "Проверьте поля",
@@ -31,6 +41,7 @@
     waiting_submit_confirm: "Готово к отправке",
     submitted: "Отправлено",
     manual_required: "Нужно вручную",
+    captcha_required: "Требуется капча",
     failed: "Ошибка",
     cancelled: "Отменено"
   };
@@ -46,6 +57,24 @@
       "\"": "&quot;",
       "'": "&#39;"
     }[ch]));
+  }
+
+  // Strip invisible Unicode (Hangul Filler U+3164, zero-width spaces, NBSP, etc.)
+  function stripBlank(text) {
+    // Strip invisible Unicode: Hangul Filler (U+3164), zero-width spaces, NBSP, BOM, etc.
+    return (text || "").replace(/[ㅤ​‌‍‎‏ ﻿⁠᠎͏]/g, "").trim();
+  }
+
+  // Get human-readable display label for a form field, handling Yandex Forms invisible placeholders.
+  function fieldDisplayLabel(field) {
+    const label = stripBlank(field.label) || stripBlank(field.question_block_text) || stripBlank(field.nearby_text);
+    if (label) return label;
+    // Yandex Forms: api_question_id = "answer_short_text_1685088" → show "short text #1685088"
+    if (field.api_question_id) {
+      const m = field.api_question_id.match(/^answer_([a-z_]+?)_(\d+)$/);
+      if (m) return `${m[1].replace(/_/g, " ")} #${m[2]}`;
+    }
+    return field.id || "?";
   }
 
   function authToken() {
@@ -130,7 +159,7 @@
     if (["submitted"].includes(status)) return "ok";
     if (["waiting_user_review", "waiting_submit_confirm"].includes(status)) return "warn";
     if (["waiting_auth", "waiting_2fa", "manual_required"].includes(status)) return "info";
-    if (["failed", "cancelled"].includes(status)) return "error";
+    if (["failed", "cancelled", "captcha_required"].includes(status)) return "error";
     return "neutral";
   }
 
@@ -249,8 +278,13 @@
     state.validation = null;
     if (render) {
       renderForms();
-      renderReview();
-      switchSection("review");
+      if (state.selectedForm?.status === "captcha_required") {
+        renderCaptcha(state.selectedForm);
+        switchSection("captcha");
+      } else {
+        renderReview();
+        switchSection("review");
+      }
     }
   }
 
@@ -265,7 +299,14 @@
 
   async function loadProfile() {
     const data = await api("/api/profile").catch(() => ({}));
-    state.profile = resultPayload(data) || {};
+    const raw = resultPayload(data) || {};
+    // Flatten legacy custom sub-object: {custom:{sex:"male"}} → {sex:"male"}
+    const profile = { ...raw };
+    if (profile.custom && typeof profile.custom === "object" && !Array.isArray(profile.custom)) {
+      Object.assign(profile, profile.custom);
+      delete profile.custom;
+    }
+    state.profile = profile;
   }
 
   async function loadRules() {
@@ -277,6 +318,7 @@
     renderDashboard();
     renderForms();
     renderReview();
+    renderCaptcha(state.selectedForm?.status === "captcha_required" ? state.selectedForm : null);
     renderEvents();
     renderConfig();
     renderProfile();
@@ -484,7 +526,7 @@
     const source = field.source || "unknown";
     const confidence = Number(field.confidence || 0);
     const validationError = field.validation_error || validationErrorForField(field.id);
-    const question = field.question_block_text || field.nearby_text || field.label || field.id;
+    const question = fieldDisplayLabel(field);
     const semanticWarning = semanticWarningForField(field);
 
     let editor = "";
@@ -639,19 +681,40 @@
   }
 
   function renderProfile() {
+    const profile = state.profile || {};
+    const keysInOrder = [
+      ...profileKeyOrder.filter(k => k in profile),
+      ...Object.keys(profile).filter(k => !profileKeyOrder.includes(k))
+    ];
+
     const root = $("#profile-fields");
-    root.innerHTML = profileFields.map(([key, label]) => `
-      <label class="field">
-        <span>${escapeHtml(label)}</span>
-        <input data-profile-key="${escapeHtml(key)}" value="${escapeHtml(state.profile?.[key] || "")}">
-      </label>
-    `).join("") + `
-      <label class="field field--wide">
-        <span>Custom JSON</span>
-        <textarea id="profile-custom-json" spellcheck="false">${escapeHtml(JSON.stringify(state.profile?.custom || {}, null, 2))}</textarea>
-      </label>
-    `;
-    $("#profile-json").value = JSON.stringify(state.profile || {}, null, 2);
+    if (keysInOrder.length === 0) {
+      root.innerHTML = `<div class="empty-state" style="margin-bottom:14px">Профиль пуст. Добавьте поля ниже.</div>`;
+    } else {
+      root.innerHTML = keysInOrder.map(key => {
+        const label = profileKeyLabels[key] || key;
+        const value = profile[key] || "";
+        return `
+          <div class="profile-row">
+            <div class="profile-row__key" title="${escapeHtml(key)}">${escapeHtml(label)}</div>
+            <input class="profile-row__input" data-profile-key="${escapeHtml(key)}" value="${escapeHtml(value)}" type="text" placeholder="не задано">
+            <button class="profile-row__del" data-delete-profile-key="${escapeHtml(key)}" type="button" aria-label="Удалить поле">×</button>
+          </div>
+        `;
+      }).join("");
+    }
+
+    const datalist = $("#profile-keys-datalist");
+    if (datalist) {
+      const usedKeys = new Set(Object.keys(profile));
+      datalist.innerHTML = profileKeyOrder.filter(k => !usedKeys.has(k)).map(k =>
+        `<option value="${escapeHtml(k)}">${escapeHtml(profileKeyLabels[k])}</option>`
+      ).join("");
+    }
+
+    if (!$("#profile-json")?.matches(":focus")) {
+      $("#profile-json").value = JSON.stringify(profile, null, 2);
+    }
   }
 
   function renderRules() {
@@ -833,6 +896,66 @@
     showResult("#test-result", results, Object.values(results).every(item => item.ok) ? "ok" : "warn");
   }
 
+  async function createDemoCaptchaForm() {
+    const data = await api("/api/demo/create-captcha", { method: "POST" });
+    showResult("#test-result", data, "ok");
+    await refreshAll();
+    const payload = resultPayload(data);
+    if (payload?.session_id) {
+      await loadSelectedForm(payload.session_id);
+    } else {
+      switchSection("forms");
+    }
+  }
+
+  function renderCaptcha(form) {
+    const navBtn = $("#nav-captcha");
+    if (navBtn) navBtn.style.display = form ? "" : "none";
+    if (!form) return;
+
+    const titleEl = $("#captcha-form-title");
+    const urlEl = $("#captcha-form-url");
+    if (titleEl) titleEl.textContent = form.title || form.form_url || form.id || "";
+    if (urlEl) urlEl.textContent = form.form_url || "";
+
+    const warnEl = $("#captcha-local-warn");
+    if (warnEl) {
+      const pub = state.config?.web?.public_base_url || state.status?.web?.public_base_url || "";
+      warnEl.hidden = Boolean(pub);
+    }
+
+    loadCaptchaScreenshot();
+  }
+
+  function loadCaptchaScreenshot() {
+    const img = $("#captcha-screenshot");
+    if (!img || !state.selectedFormId) return;
+    const url = withToken(`/api/forms/${encodeURIComponent(state.selectedFormId)}/screenshot`);
+    img.style.display = "none";
+    const fresh = new Image();
+    fresh.onload = () => {
+      img.src = fresh.src;
+      img.style.display = "";
+    };
+    fresh.onerror = () => { img.style.display = "none"; };
+    fresh.src = `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`;
+  }
+
+  async function captchaReinspect() {
+    if (!state.selectedFormId) return;
+    showResult("#captcha-result", "Reinspecting...");
+    const data = await api(
+      `/api/forms/${encodeURIComponent(state.selectedFormId)}/captcha-reinspect`,
+      { method: "POST" }
+    );
+    showResult("#captcha-result", data, "ok");
+    await refreshAfterAction("Reinspect завершён");
+    if (state.selectedForm?.status !== "captcha_required") {
+      renderReview();
+      switchSection("review");
+    }
+  }
+
   async function createDemoForm(authDemo = false) {
     const path = authDemo ? "/api/demo/create-auth" : "/api/demo/create";
     const data = await api(path, { method: "POST" });
@@ -891,13 +1014,20 @@
           ${badge(`submit: ${humanSubmitStrategy(payload.submit_strategy)}`, payload.submit_strategy === "browser_worker" ? "neutral" : "ok")}
           ${payload.auth_required ? badge("auth required", "warn") : badge("no auth", "ok")}
           ${payload.captcha_required ? badge("captcha blocked", "error") : ""}
+          ${payload.browser_fallback_used ? badge("browser fallback", "warn") : ""}
           <span>${fields.length} fields</span>
         </div>
-        ${payload.provider_error ? `<div class="inline-error">${escapeHtml(payload.provider_error)}</div>` : ""}
-        ${payload.error ? `<div class="inline-error">${escapeHtml(payload.error)}</div>` : ""}
-        ${!data.ok && payload.provider_type !== "generic_browser" ? `
+        ${payload.browser_fallback_used && payload.provider_error ? `
           <div class="warning-box">
-            This is a Yandex/Google form. Provider mode is required. Configure API token or mapping file.
+            API не настроен (${escapeHtml(payload.provider_error)}). Форма открыта через браузер.
+            ${payload.captcha_required ? " SmartCaptcha обнаружена — создайте сессию, чтобы пройти капчу вручную." : ""}
+          </div>
+        ` : ""}
+        ${!payload.browser_fallback_used && payload.provider_error ? `<div class="inline-error">${escapeHtml(payload.provider_error)}</div>` : ""}
+        ${payload.error ? `<div class="inline-error">${escapeHtml(payload.error)}</div>` : ""}
+        ${!data.ok && payload.provider_type !== "generic_browser" && !payload.browser_fallback_used ? `
+          <div class="warning-box">
+            Yandex/Google форма. Нет API-токена и браузерный фолбэк отключён. Настройте API или включите <code>KNOWN_FORMS_BROWSER_FALLBACK=true</code>.
           </div>
           <div class="button-row">
             <a class="button" href="/config/yandex_forms.map.example.json" target="_blank" rel="noreferrer">Configure mapping</a>
@@ -907,7 +1037,7 @@
           </div>
         ` : ""}
         <div class="field-preview">
-          ${fields.map(field => `<div><strong>${escapeHtml(field.label || field.id)}</strong><span>${escapeHtml(field.type || "")}</span></div>`).join("") || "Поля не найдены."}
+          ${fields.map(field => `<div><strong>${escapeHtml(fieldDisplayLabel(field))}</strong><span>${escapeHtml(field.type || "")}</span></div>`).join("") || "Поля не найдены."}
         </div>
         ${payload.screenshot_path ? `<p>Screenshot: <code>${escapeHtml(payload.screenshot_path)}</code></p>` : ""}
         <details>
@@ -919,26 +1049,47 @@
   }
 
   async function saveProfile() {
-    let profile = {};
-    try {
-      profile = JSON.parse($("#profile-json").value || "{}");
-    } catch (error) {
-      showResult("#profile-result", `Advanced JSON is invalid: ${error.message}`, "error");
-      return;
-    }
+    const profile = {};
     $$("[data-profile-key]").forEach(input => {
-      profile[input.dataset.profileKey] = input.value;
+      const value = input.value.trim();
+      if (value !== "") profile[input.dataset.profileKey] = value;
     });
-    try {
-      profile.custom = JSON.parse($("#profile-custom-json").value || "{}");
-    } catch (error) {
-      showResult("#profile-result", `Custom JSON is invalid: ${error.message}`, "error");
-      return;
-    }
-    const data = await api("/api/profile", { method: "POST", body: JSON.stringify(profile, null, 2) });
+    const data = await api("/api/profile", { method: "POST", body: JSON.stringify(profile) });
     showResult("#profile-result", data, "ok");
+    showToast("Профиль сохранён");
     await loadProfile();
     renderProfile();
+  }
+
+  function addProfileField() {
+    const keyInput = $("#profile-new-key");
+    const valueInput = $("#profile-new-value");
+    const key = keyInput.value.trim();
+    if (!key) {
+      showToast("Введите имя поля", "warn");
+      return;
+    }
+    state.profile = { ...(state.profile || {}), [key]: valueInput.value };
+    keyInput.value = "";
+    valueInput.value = "";
+    renderProfile();
+  }
+
+  function deleteProfileField(key) {
+    const profile = { ...(state.profile || {}) };
+    delete profile[key];
+    state.profile = profile;
+    renderProfile();
+  }
+
+  function applyProfileJson() {
+    try {
+      state.profile = JSON.parse($("#profile-json").value || "{}");
+      renderProfile();
+      showToast("JSON применён. Не забудьте сохранить.", "warn");
+    } catch (error) {
+      showToast(`JSON syntax error: ${error.message}`, "error");
+    }
   }
 
   async function saveRules() {
@@ -987,6 +1138,12 @@
     $("#test-llm-button").addEventListener("click", () => safeRun(() => runTest("llm")));
     $("#create-demo-button").addEventListener("click", () => safeRun(() => createDemoForm(false)));
     $("#create-demo-auth-button").addEventListener("click", () => safeRun(() => createDemoForm(true)));
+    $("#create-demo-captcha-button").addEventListener("click", () => safeRun(createDemoCaptchaForm));
+    $("#captcha-reinspect-button").addEventListener("click", () => safeRun(captchaReinspect));
+    $("#captcha-refresh-screenshot-button").addEventListener("click", () => loadCaptchaScreenshot());
+    $("#captcha-open-original-button").addEventListener("click", () => {
+      if (state.selectedForm?.form_url) window.open(state.selectedForm.form_url, "_blank", "noopener");
+    });
     $("#inspect-url-button").addEventListener("click", () => safeRun(inspectUrl));
     $("#create-from-url-button").addEventListener("click", () => safeRun(createFormFromUrl));
     $("#show-all-forms").addEventListener("change", () => safeRun(loadForms).then(renderForms));
@@ -1002,6 +1159,9 @@
       if (state.selectedForm?.form_url) window.open(state.selectedForm.form_url, "_blank", "noopener");
     });
     $("#save-profile-button").addEventListener("click", () => safeRun(saveProfile));
+    $("#profile-add-button").addEventListener("click", () => addProfileField());
+    $("#apply-profile-json-button").addEventListener("click", () => applyProfileJson());
+    $("#profile-new-value").addEventListener("keydown", event => { if (event.key === "Enter") addProfileField(); });
     $("#save-rules-button").addEventListener("click", () => safeRun(saveRules));
     $("#validate-rules-button").addEventListener("click", validateRulesJson);
 
@@ -1018,6 +1178,8 @@
       if (event.target.id === "auth-reinspect-button") safeRun(reinspectForm);
       const explainButton = event.target.closest("[data-explain-field]");
       if (explainButton) safeRun(() => explainField(explainButton.dataset.explainField));
+      const deleteProfileKeyButton = event.target.closest("[data-delete-profile-key]");
+      if (deleteProfileKeyButton) deleteProfileField(deleteProfileKeyButton.dataset.deleteProfileKey);
     });
 
     $("#manual-url").addEventListener("input", event => {
@@ -1061,6 +1223,8 @@
     window.submitForm = () => safeRun(submitForm);
     window.cancelForm = () => safeRun(cancelForm);
     window.saveProfile = () => safeRun(saveProfile);
+    window.addProfileField = () => addProfileField();
+    window.applyProfileJson = () => applyProfileJson();
   }
 
   document.addEventListener("DOMContentLoaded", () => {

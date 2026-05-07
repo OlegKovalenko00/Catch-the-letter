@@ -56,6 +56,11 @@ class TwoFactorCode(BaseModel):
     code: str
 
 
+class ClickRequest(BaseModel):
+    x: int
+    y: int
+
+
 sessions: dict[str, dict[str, Any]] = {}
 
 
@@ -92,6 +97,101 @@ def touch_session(session_id: str) -> dict[str, Any] | None:
     if session:
         session["last_used_at"] = time.time()
     return session
+
+
+# Chrome 124 UA used for all contexts so Yandex SmartCaptcha sees a plausible browser.
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+# Init script injected into every page to hide Playwright/automation markers.
+STEALTH_INIT_SCRIPT = """
+(function () {
+  // Hide webdriver flag
+  Object.defineProperty(navigator, 'webdriver', {get: () => undefined, configurable: true});
+
+  // Realistic plugin list
+  const _plugins = [
+    {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+    {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+    {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+  ];
+  _plugins.item = i => _plugins[i];
+  _plugins.namedItem = n => _plugins.find(p => p.name === n) || null;
+  _plugins.refresh = () => {};
+  Object.defineProperty(navigator, 'plugins', {get: () => _plugins});
+
+  // Languages matching Russian locale
+  Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en-US', 'en']});
+
+  // chrome runtime stub
+  if (!window.chrome) {
+    window.chrome = {runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {}};
+  }
+
+  // Remove Playwright globals
+  try { delete window.__playwright; } catch(_) {}
+  try { delete window.__pwInitScripts; } catch(_) {}
+  try { delete window.playwright; } catch(_) {}
+})();
+"""
+
+
+async def create_stealth_context(playwright):
+    """Launch Chromium with stealth settings that reduce bot-detection signals."""
+    browser = await playwright.chromium.launch(
+        headless=True,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-gpu",
+        ],
+    )
+    context = await browser.new_context(
+        user_agent=_CHROME_UA,
+        locale="ru-RU",
+        timezone_id="Europe/Moscow",
+        viewport={"width": 1366, "height": 768},
+        extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"},
+    )
+    await context.add_init_script(STEALTH_INIT_SCRIPT)
+    return browser, context
+
+
+async def wait_for_yandex_forms(page: Page) -> None:
+    """Extra wait for Yandex Forms React rendering after domcontentloaded."""
+    # Primary: Yandex Forms always renders inputs with name="answer_*" — most reliable
+    try:
+        await page.wait_for_selector('input[name^="answer_"], textarea[name^="answer_"]', timeout=12000)
+        await page.wait_for_timeout(800)  # let React finish rendering question titles
+        return
+    except Exception:
+        pass
+    yandex_selectors = [
+        ".b-form-question",
+        "[data-form-id]",
+        "form .field",
+        "form input:not([type='hidden'])",
+        "form textarea",
+        ".form__container",
+        "[class*='form-question']",
+    ]
+    for sel in yandex_selectors:
+        try:
+            await page.wait_for_selector(sel, timeout=8000)
+            await page.wait_for_timeout(500)
+            return
+        except Exception:
+            pass
+    # Fallback: wait for network to settle a bit more
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
 
 
 def form_type_for(url: str) -> str:
@@ -239,6 +339,12 @@ async def screenshot(page: Page, session_id: str, suffix: str) -> str:
 
 FIELD_SCRIPT = r"""
 () => {
+  // Detect invisible/blank Unicode: U+3164 Hangul Filler, zero-width spaces, NBSP, BOM, etc.
+  function isBlankText(text) {
+    if (!text) return true;
+    // Strip Hangul Filler (U+3164), zero-width spaces, NBSP, BOM, and whitespace
+    return text.replace(/[ㅤ​‌‍\u200E\u200F ﻿⁠᠎\s]/g, '').length === 0;
+  }
   function cssPath(el) {
     if (el.id) return '#' + CSS.escape(el.id);
     const parts = [];
@@ -260,10 +366,40 @@ FIELD_SCRIPT = r"""
     return parts.join(' > ');
   }
   function compact(text) {
-    return (text || '').replace(/\s+/g, ' ').trim();
+    // Strip invisible Unicode chars before whitespace normalization
+    return (text || '').replace(/[ㅤ​‌‍‎‏﻿ ⁠᠎͏]/g, '').replace(/\s+/g, ' ').trim();
   }
   function normalized(text) {
     return compact(text).toLowerCase();
+  }
+  // Walk DOM ancestors to find Yandex Forms question title text (sits in a sibling div above input).
+  // Yandex Forms does NOT use <label for="..."> — question text is in a preceding sibling/ancestor div.
+  function yandexAncestorLabel(node) {
+    let cur = node.parentElement;
+    for (let depth = 0; depth < 9 && cur && cur !== document.body; depth++) {
+      const parent = cur.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children);
+        const idx = siblings.indexOf(cur);
+        // Check up to 3 preceding siblings for question text
+        for (let i = Math.max(0, idx - 3); i < idx; i++) {
+          const sib = siblings[i];
+          const tag = sib.tagName;
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') continue;
+          const txt = compact(sib.innerText || sib.textContent || '');
+          if (!isBlankText(txt) && txt.length > 2 && txt.length < 600) return txt;
+        }
+      }
+      // Look for title-class children of current ancestor that don't contain node
+      const titleEls = cur.querySelectorAll('[class*="title" i], [class*="label" i], [class*="caption" i], [class*="question" i], [class*="heading" i], legend');
+      for (const t of titleEls) {
+        if (t === node || t.contains(node) || node.contains(t)) continue;
+        const txt = compact(t.innerText || t.textContent || '');
+        if (!isBlankText(txt) && txt.length > 2 && txt.length < 600) return txt;
+      }
+      cur = cur.parentElement;
+    }
+    return '';
   }
   function nearestQuestion(node) {
     const rawType = (node.getAttribute('type') || '').toLowerCase();
@@ -277,37 +413,69 @@ FIELD_SCRIPT = r"""
   }
   function containerLabel(container, node) {
     const legend = container.querySelector('legend');
-    if (legend) return compact(legend.innerText);
+    if (legend) {
+      const t = compact(legend.innerText);
+      if (!isBlankText(t)) return t;
+    }
     const aria = container.getAttribute('aria-label');
-    if (aria) return aria;
+    if (aria && !isBlankText(aria)) return aria;
+    // Yandex Forms: walk ancestors for question title
+    const name = node.getAttribute('name') || '';
+    if (name.startsWith('answer_')) {
+      const yLabel = yandexAncestorLabel(node);
+      if (!isBlankText(yLabel)) return yLabel;
+    }
     const text = compact(container.innerText);
     const option = optionLabel(node);
     if (option && text.endsWith(option)) return compact(text.slice(0, text.length - option.length));
-    return text.slice(0, 300);
+    return isBlankText(text) ? '' : text.slice(0, 300);
   }
   function optionLabel(node) {
     if (node.labels && node.labels.length) {
-      return compact(Array.from(node.labels).map(x => x.innerText).join(' '));
+      const t = compact(Array.from(node.labels).map(x => x.innerText).join(' '));
+      if (!isBlankText(t)) return t;
     }
     const aria = node.getAttribute('aria-label');
-    if (aria) return aria;
+    if (aria && !isBlankText(aria)) return aria;
     const parentLabel = node.closest('label');
-    if (parentLabel) return compact(parentLabel.innerText);
+    if (parentLabel) {
+      const t = compact(parentLabel.innerText);
+      if (!isBlankText(t)) return t;
+    }
     const parent = node.parentElement;
-    return parent ? compact(parent.innerText) : (node.value || '');
+    const t = parent ? compact(parent.innerText) : '';
+    return (!isBlankText(t)) ? t : (node.value || '');
   }
   function labelFor(node) {
+    // 1. <label for="id"> association
     if (node.labels && node.labels.length) {
-      return Array.from(node.labels).map(x => x.innerText.trim()).filter(Boolean).join(' ');
+      const t = Array.from(node.labels).map(x => x.innerText.trim()).filter(x => !isBlankText(x)).join(' ');
+      if (!isBlankText(t)) return t;
     }
+    // 2. aria-label
     const aria = node.getAttribute('aria-label');
-    if (aria) return aria;
+    if (aria && !isBlankText(aria)) return aria;
+    // 3. placeholder (skip if invisible Unicode like U+3164 from Yandex Forms)
     const placeholder = node.getAttribute('placeholder');
-    if (placeholder) return placeholder;
+    if (placeholder && !isBlankText(placeholder)) return placeholder;
+    // 4. Ancestor <label>
     const parentLabel = node.closest('label');
-    if (parentLabel) return parentLabel.innerText.trim();
+    if (parentLabel) {
+      const t = parentLabel.innerText.trim();
+      if (!isBlankText(t)) return t;
+    }
+    // 5. Yandex Forms: name="answer_*" → walk DOM ancestors for question title div
+    const name = node.getAttribute('name') || '';
+    if (name.startsWith('answer_')) {
+      const yLabel = yandexAncestorLabel(node);
+      if (!isBlankText(yLabel)) return yLabel;
+    }
+    // 6. Nearest question block inner text
     const block = node.closest('[role="listitem"], .freebirdFormviewerComponentsQuestionBaseRoot, div');
-    if (block) return block.innerText.replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (block) {
+      const t = compact(block.innerText).slice(0, 300);
+      if (!isBlankText(t)) return t;
+    }
     return '';
   }
   function fieldType(node) {
@@ -344,6 +512,11 @@ FIELD_SCRIPT = r"""
     }
     return false;
   }
+  // Parse Yandex Forms name attribute: "answer_short_text_1685088" → {type: "answer_short_text", id: "1685088"}
+  function parseYandexName(name) {
+    const m = name.match(/^(answer_[a-z_]+?)_(\d+)$/);
+    return m ? {apiAnswerType: m[1], yandexQuestionId: m[2]} : {apiAnswerType: '', yandexQuestionId: ''};
+  }
   const nodes = Array.from(document.querySelectorAll(
     'input:not([type="hidden"]), textarea, select, [role="textbox"], [role="radio"], [role="checkbox"]'
   ));
@@ -360,19 +533,24 @@ FIELD_SCRIPT = r"""
       const name = node.getAttribute('name') || node.getAttribute('aria-name') || '';
       const groupKey = `${rawType || role}:${name || cssPath(container)}`;
       const groupType = (rawType === 'radio' || role === 'radio') ? 'radio_group' : 'checkbox_group';
+      const {apiAnswerType, yandexQuestionId} = parseYandexName(name);
       if (!groups.has(groupKey)) {
+        const lbl = containerLabel(container, node);
         groups.set(groupKey, {
           id: name || groupKey,
           selector: cssPath(container),
-          label: containerLabel(container, node),
+          label: lbl,
           type: groupType,
           required: false,
           options: [],
-          normalized_label: normalized(containerLabel(container, node)),
+          normalized_label: normalized(lbl),
           question_block_text: compact(container.innerText).slice(0, 1000),
           placeholder: '',
           aria_label: node.getAttribute('aria-label') || '',
-          nearby_text: compact((node.parentElement && node.parentElement.innerText) || '').slice(0, 500)
+          nearby_text: compact((node.parentElement && node.parentElement.innerText) || '').slice(0, 500),
+          yandex_question_id: yandexQuestionId,
+          api_answer_type: apiAnswerType,
+          api_question_id: name,
         });
       }
       const group = groups.get(groupKey);
@@ -392,6 +570,8 @@ FIELD_SCRIPT = r"""
       : [];
     const label = labelFor(node);
     const container = nearestQuestion(node);
+    const fieldName = node.getAttribute('name') || '';
+    const {apiAnswerType, yandexQuestionId} = parseYandexName(fieldName);
     result.push({
       id,
       selector,
@@ -403,13 +583,17 @@ FIELD_SCRIPT = r"""
       placeholder: node.getAttribute('placeholder') || '',
       aria_label: node.getAttribute('aria-label') || '',
       nearby_text: compact((node.parentElement && node.parentElement.innerText) || '').slice(0, 500),
-      question_block_text: compact(container.innerText).slice(0, 1000)
+      question_block_text: compact(container.innerText).slice(0, 1000),
+      yandex_question_id: yandexQuestionId,
+      api_answer_type: apiAnswerType,
+      api_question_id: fieldName || id,
     });
   }
   for (const group of groups.values()) {
     if (group.options.length === 1 && group.type === 'checkbox_group') {
       group.type = 'checkbox';
     }
+    group.yandex_option_ids = group.options.map(o => o.value).filter(Boolean);
     result.push(group);
   }
   return result;
@@ -530,8 +714,7 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
     sid = req.session_id or str(uuid.uuid4())
     try:
       playwright = await async_playwright().start()
-      browser = await playwright.chromium.launch(headless=True)
-      context = await browser.new_context()
+      browser, context = await create_stealth_context(playwright)
       page = await context.new_page()
       await page.goto(req.url, wait_until="domcontentloaded", timeout=60000)
       try:
@@ -547,6 +730,8 @@ async def inspect_form(req: InspectRequest) -> dict[str, Any]:
               break
           except Exception:
               pass
+      if "yandex" in (req.url or "").lower():
+          await wait_for_yandex_forms(page)
       auth_required = await detect_auth_required(page)
       captcha_required = await detect_captcha_required(page)
       shot = await screenshot(page, sid, "inspect")
@@ -946,9 +1131,10 @@ async def reinspect_form(req: SubmitRequest) -> dict[str, Any]:
         return {"ok": False, "session_id": req.session_id, "fields": [], "error": "session not found"}
     page: Page = session["page"]
     auth_required = await detect_auth_required(page)
+    captcha_required = await detect_captcha_required(page)
     shot = await screenshot(page, req.session_id, "reinspect")
     fields: list[dict[str, Any]] = []
-    if not auth_required:
+    if not auth_required and not captcha_required:
         fields = await page.evaluate(FIELD_SCRIPT)
     return {
         "ok": True,
@@ -958,9 +1144,10 @@ async def reinspect_form(req: SubmitRequest) -> dict[str, Any]:
         "title": await page.title(),
         "form_type": form_type_for(page.url),
         "auth_required": auth_required,
+        "captcha_required": captcha_required,
         "fields": fields,
         "screenshot_path": shot,
-        "error": "",
+        "error": "captcha_required" if captcha_required else "",
     }
 
 
@@ -969,3 +1156,81 @@ async def close_session(req: CloseSessionRequest) -> dict[str, Any]:
     await cleanup_expired_sessions()
     closed = await close_session_id(req.session_id)
     return {"ok": True, "closed": closed, "error": ""}
+
+
+@app.get("/session/{session_id}/screenshot")
+async def get_session_screenshot(session_id: str):
+    from fastapi.responses import Response
+    await cleanup_expired_sessions()
+    session = touch_session(session_id)
+    if not session:
+        return Response(content=b"session not found", status_code=404, media_type="text/plain")
+    page: Page = session["page"]
+    try:
+        png_bytes = await page.screenshot(type="png")
+        return Response(content=png_bytes, media_type="image/png")
+    except Exception as exc:
+        return Response(content=str(exc).encode(), status_code=500, media_type="text/plain")
+
+
+@app.post("/session/{session_id}/click")
+async def click_at_session(session_id: str, req: ClickRequest) -> dict[str, Any]:
+    await cleanup_expired_sessions()
+    session = touch_session(session_id)
+    if not session:
+        return {"ok": False, "error": "session not found"}
+    page: Page = session["page"]
+    try:
+        await page.mouse.click(req.x, req.y)
+        shot = await screenshot(page, session_id, "click")
+        return {"ok": True, "x": req.x, "y": req.y, "screenshot_path": shot, "error": ""}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/demo-captcha-then-form")
+async def demo_captcha_then_form():
+    """Demo page that first shows a fake captcha placeholder, then reveals a form."""
+    from fastapi.responses import HTMLResponse
+    html = """<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Demo Captcha then Form</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 4rem auto; padding: 1rem; }
+    #captcha-block { border: 2px solid #e00; padding: 2rem; border-radius: 8px; margin-bottom: 2rem; }
+    #form-block { display: none; border: 2px solid #090; padding: 2rem; border-radius: 8px; }
+    button { padding: .5rem 1rem; font-size: 1rem; cursor: pointer; }
+    input { display: block; margin: .5rem 0 1rem; padding: .4rem; width: 100%; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <h1>Demo: Captcha then Form</h1>
+  <div id="captcha-block">
+    <h2>Вы не робот?</h2>
+    <p>SmartCaptcha: нажмите кнопку для подтверждения.</p>
+    <button id="pass-btn" onclick="passCaptcha()">✓ Я не робот</button>
+  </div>
+  <div id="form-block">
+    <h2>Форма (доступна после капчи)</h2>
+    <form id="demo-form">
+      <label>ФИО<input type="text" name="full_name" required></label>
+      <label>Email<input type="email" name="email" required></label>
+      <label>Группа<input type="text" name="group" required></label>
+      <button type="submit">Отправить</button>
+    </form>
+  </div>
+  <script>
+    function passCaptcha() {
+      document.getElementById('captcha-block').style.display = 'none';
+      document.getElementById('form-block').style.display = 'block';
+    }
+    document.getElementById('demo-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      document.body.innerHTML = '<h1>Форма отправлена!</h1><p>Демо завершено.</p>';
+    });
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)

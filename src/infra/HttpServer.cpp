@@ -293,6 +293,41 @@ public:
       bool ok = handlers.create_demo_form ? handlers.create_demo_form(true, err) : false;
       set_json_result(res, ok, err.empty() ? "demo auth creation failed" : err);
     });
+    server.Post("/api/demo/create-captcha", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string err;
+      bool ok = handlers.create_demo_captcha_form ? handlers.create_demo_captcha_form(err) : false;
+      set_json_result(res, ok, err.empty() ? "demo captcha creation failed" : err);
+    });
+
+    server.Get(R"(/api/forms/([^/]+)/screenshot)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string png = handlers.get_form_screenshot_png ? handlers.get_form_screenshot_png(req.matches[1]) : "";
+      if (png.empty()) {
+        res.status = 404;
+        res.set_content("screenshot unavailable", "text/plain; charset=utf-8");
+        return;
+      }
+      res.set_content(png, "image/png");
+    });
+    server.Post(R"(/api/forms/([^/]+)/captcha-click)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string err;
+      bool ok = handlers.captcha_click_form ?
+          handlers.captcha_click_form(req.matches[1], req.body, err) : false;
+      set_json_result(res, ok, err.empty() ? "click failed" : err);
+    });
+    server.Post(R"(/api/forms/([^/]+)/captcha-reinspect)", [this, post_form_action](const httplib::Request& req, httplib::Response& res) {
+      post_form_action(req, res, handlers.captcha_reinspect_form);
+    });
+
+    // Serve the SPA for /forms/* paths (for captcha page deep links)
+    server.Get(R"(/forms/.*)", [](const httplib::Request&, httplib::Response& res) {
+      set_static_content(res,
+                         {"/app/web/index.html", "./web/index.html"},
+                         "text/html; charset=utf-8",
+                         k_fallback_html);
+    });
 
     running = true;
     worker = std::thread([this]() {

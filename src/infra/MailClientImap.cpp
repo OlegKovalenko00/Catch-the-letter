@@ -250,8 +250,19 @@ std::string extract_domain(const std::string& url) {
 
 double estimate_form_link_confidence(const std::string& url) {
   std::string lower = to_lower(url);
-  if (lower.find("forms.yandex.") != std::string::npos) return 0.95;
-  if (lower.find("docs.google.com/forms") != std::string::npos) return 0.95;
+  // Exclude non-fillable response/admin/confirmation URLs that form services send in confirmation emails.
+  if (lower.find("forms.yandex.") != std::string::npos) {
+    if (lower.find("/admin/") != std::string::npos) return 0.0;   // response viewer
+    if (lower.find("/answers/") != std::string::npos) return 0.0; // submitted answers
+    if (lower.find("/success") != std::string::npos) return 0.0;  // thank-you page
+    if (lower.find("/results/") != std::string::npos) return 0.0; // results page
+    return 0.95;
+  }
+  if (lower.find("docs.google.com/forms") != std::string::npos) {
+    if (lower.find("/viewanalytics") != std::string::npos) return 0.0; // response analytics
+    if (lower.find("/closedform") != std::string::npos) return 0.0;
+    return 0.95;
+  }
   if (lower.find("forms.gle") != std::string::npos) return 0.95;
   if (lower.find("forms.office.com") != std::string::npos) return 0.95;
   if (lower.find("forms.microsoft.com") != std::string::npos) return 0.95;

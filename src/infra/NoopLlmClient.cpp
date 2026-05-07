@@ -34,8 +34,15 @@ public:
     }
 
     std::string haystack = msg.subject + "\n" + msg.snippet + "\n" + msg.body_text + "\n" + msg.body;
-    if (!result.form_links.empty() ||
-        contains_any(haystack, {"опрос", "анкета", "форма", "регистрация", "заполните", "survey", "form", "questionnaire"})) {
+    // Confirmation/receipt emails should NOT be treated as new form requests.
+    bool is_confirmation = contains_any(haystack, {
+        "ответы", "answers", "отправлен", "submitted", "получен", "received",
+        "ваш ответ", "your response", "thank you for", "спасибо за ответ",
+        "/admin/", "/answers/", "response submitted"
+    });
+    if (!is_confirmation &&
+        (!result.form_links.empty() ||
+         contains_any(haystack, {"опрос", "анкета", "форма", "регистрация", "заполните", "survey", "form", "questionnaire"}))) {
       result.kind = message_kind::form_request;
       result.confidence = result.form_links.empty() ? 0.72 : 0.9;
       result.user_action_required = true;

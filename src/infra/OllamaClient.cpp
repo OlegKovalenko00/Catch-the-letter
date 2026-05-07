@@ -45,11 +45,9 @@ bool is_sensitive_key(const std::string& key) {
   });
   return lower.find("passport") != std::string::npos ||
          lower.find("snils") != std::string::npos ||
-         lower.find("birth") != std::string::npos ||
          lower.find("password") != std::string::npos ||
          lower.find("token") != std::string::npos ||
          lower.find("secret") != std::string::npos ||
-         lower.find("code") != std::string::npos ||
          lower.find("cookie") != std::string::npos;
 }
 
@@ -241,7 +239,9 @@ public:
           {"aria_label", f.aria_label},
           {"question_block_text", f.question_block_text},
           {"nearby_text", f.nearby_text},
-          {"validation_error", f.validation_error}
+          {"validation_error", f.validation_error},
+          {"api_answer_type", f.api_answer_type},
+          {"yandex_question_id", f.yandex_question_id}
       });
     }
 
@@ -255,14 +255,21 @@ public:
     }
 
     std::ostringstream prompt;
-    prompt << "Сопоставь поля формы с профилем. Верни только JSON вида "
-              "{\"fields\":[{\"field_id\":\"...\",\"semantic_key\":\"full_name|hse_email|personal_email|phone|student_group|faculty|programme|course_year|campus|rating|opinion|consent|unknown|custom.key\","
+    prompt << "Сопоставь поля формы с профилем пользователя. Верни ТОЛЬКО JSON:\n"
+              "{\"fields\":[{\"field_id\":\"...\",\"semantic_key\":\"full_name|last_name|first_name|middle_name|hse_email|personal_email|phone|student_group|faculty|programme|course_year|campus|education_level|sex|birth_date|nationality|department|rating|opinion|consent|unknown\","
               "\"mapped_profile_key\":\"...\",\"suggested_value\":\"...\",\"option_value\":\"...\","
-              "\"values\":[],\"confidence\":0.0,\"source\":\"llm\",\"requires_user_input\":true,"
+              "\"values\":[],\"confidence\":0.0,\"source\":\"llm\",\"requires_user_input\":false,"
               "\"can_auto_fill\":true,\"reason\":\"...\"}]}.\n"
-              "field_id must exist. radio/select option_value must match an option label/value/id. "
-              "Checkbox values must match options. Consent/privacy/personal-data and opinion/rating/comment fields need explicit user input. "
-              "Do not return passwords, tokens, cookies, auth codes or sensitive documents.\n"
+              "Правила:\n"
+              "- field_id обязателен и должен совпадать с id поля.\n"
+              "- mapped_profile_key — это ключ из профиля (без вложенности, без 'custom.' префикса).\n"
+              "- Если в профиле есть ключ, точно соответствующий полю (sex→Пол, birth_date→дата рождения), используй его.\n"
+              "- radio/select: option_value должен совпадать с label/value/id одного из вариантов; если нет точного совпадения, оставь пустым.\n"
+              "- Согласие/персональные данные и оценки/мнения/комментарии → requires_user_input=true, can_auto_fill=false.\n"
+              "- Не возвращай пароли, токены, cookie, коды подтверждения, документы.\n"
+              "- Если label/question_block_text пустые, используй api_answer_type: "
+              "answer_short_text=текст (имя/email/группа), answer_long_text=длинный текст, "
+              "answer_choices=выбор варианта, answer_date=дата, answer_boolean=да/нет.\n"
            << "Тема письма: " << msg.subject << "\n"
            << "Краткое письмо: " << msg.snippet << "\n"
            << "Тип формы: " << form.form_type << "\n"
@@ -359,7 +366,10 @@ private:
               "{\"kind\":\"ignored|important_notification|form_request|auth_required|unknown\","
               "\"confidence\":0.0,\"summary\":\"...\",\"user_action_required\":true,"
               "\"form_links\":[{\"url\":\"...\",\"domain\":\"...\",\"confidence\":0.0}]}.\n"
-           << "Не принимай решений об отправке форм.\n"
+           << "form_request — письмо с НОВОЙ формой для заполнения. "
+              "Письма-подтверждения/квитанции об уже отправленных ответах (слова: 'ваш ответ получен', 'form submitted', 'answers', '/admin/') "
+              "классифицируй как 'ignored'. "
+              "form_links — только ссылки на заполняемые формы (НЕ на /admin/, /answers/, /viewanalytics).\n"
            << "От: " << msg.from << "\n"
            << "Тема: " << msg.subject << "\n"
            << "Текст: " << msg.snippet << "\n"

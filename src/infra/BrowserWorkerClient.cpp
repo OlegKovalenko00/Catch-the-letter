@@ -324,6 +324,64 @@ std::string browser_worker_client::enter_two_factor_code(const std::string& brow
   return response.value("status", "failed");
 }
 
+bool browser_worker_client::get_binary(const std::string& path, std::string& out_bytes, std::string& err) const {
+  if (!cfg.enabled) {
+    err = "browser-worker disabled";
+    return false;
+  }
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    err = "curl init failed";
+    return false;
+  }
+
+  std::string url = cfg.endpoint + path;
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out_bytes);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(cfg.timeout_seconds));
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+
+  CURLcode rc = curl_easy_perform(curl);
+  long code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+  curl_easy_cleanup(curl);
+
+  if (rc != CURLE_OK) {
+    err = curl_easy_strerror(rc);
+    return false;
+  }
+  if (code < 200 || code >= 300) {
+    std::ostringstream ss;
+    ss << "browser-worker HTTP " << code;
+    err = ss.str();
+    return false;
+  }
+  err.clear();
+  return true;
+}
+
+std::string browser_worker_client::get_screenshot_png(const std::string& browser_session_id,
+                                                      std::string& err) const {
+  std::string bytes;
+  if (!get_binary("/session/" + browser_session_id + "/screenshot", bytes, err)) return {};
+  return bytes;
+}
+
+bool browser_worker_client::click_at(const std::string& browser_session_id,
+                                     int x,
+                                     int y,
+                                     std::string& err) const {
+  json response;
+  return post_json(
+      "/session/" + browser_session_id + "/click",
+      {{"x", x}, {"y", y}},
+      response,
+      err
+  );
+}
+
 std::optional<form_snapshot> browser_worker_client::reinspect_form(const std::string& browser_session_id,
                                                                    std::string& err) const {
   json response;

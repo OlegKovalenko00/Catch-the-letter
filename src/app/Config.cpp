@@ -226,6 +226,9 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.telegram.poll_updates = get_bool(telegram, "poll_updates", out.telegram.poll_updates);
   out.telegram.poll_interval_seconds =
       get_int(telegram, "poll_interval_seconds", out.telegram.poll_interval_seconds);
+  out.telegram.captcha_remote_control_experimental = get_bool(
+      telegram, "captcha_remote_control_experimental", out.telegram.captcha_remote_control_experimental);
+  apply_env_override(out.telegram.captcha_remote_control_experimental, "TELEGRAM_CAPTCHA_REMOTE_CONTROL");
 
   const json twilio = root.value("twilio", json::object());
   out.twilio.enabled = get_bool(twilio, "enabled", out.twilio.enabled);
@@ -241,6 +244,7 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.http.port = get_int(http, "port", out.http.port);
   out.http.auth_token = get_string(http, "auth_token", out.http.auth_token);
   if (out.http.auth_token.empty()) out.http.auth_token = get_env_value(http, "auth_token_env");
+  out.http.web_public_base_url = get_string(http, "web_public_base_url", out.http.web_public_base_url);
   apply_env_override(out.http.host, "WEB_HOST");
   if (const char* web_port = std::getenv("WEB_PORT")) {
     if (std::string(web_port).empty() == false) {
@@ -250,6 +254,7 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
       }
     }
   }
+  apply_env_override(out.http.web_public_base_url, "WEB_PUBLIC_BASE_URL");
 
   const json storage = root.value("storage", json::object());
   out.storage.path = get_string(storage, "sqlite_path", get_string(storage, "path", out.storage.path));

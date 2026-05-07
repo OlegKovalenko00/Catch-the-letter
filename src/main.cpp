@@ -378,6 +378,18 @@ int main(int argc, char** argv) {
     handlers.create_demo_form = [&application](bool auth_demo, std::string& e) {
       return application.create_demo_form(auth_demo, e);
     };
+    handlers.create_demo_captcha_form = [&application](std::string& e) {
+      return application.create_demo_captcha_form(e);
+    };
+    handlers.get_form_screenshot_png = [&application](const std::string& id) {
+      return application.form_screenshot_png(id);
+    };
+    handlers.captcha_click_form = [&application](const std::string& id, const std::string& body, std::string& e) {
+      return application.captcha_click_form(id, body, e);
+    };
+    handlers.captcha_reinspect_form = [&application](const std::string& id, std::string& e) {
+      return application.captcha_reinspect_form(id, e);
+    };
     server = make_http_server(cfg.http, handlers, err);
     if (!server->start()) {
       std::cerr << "http server failed" << std::endl;

@@ -255,6 +255,42 @@ curl -X POST http://127.0.0.1:8080/api/test/telegram
 
 If `TELEGRAM_PROXY_URL` contains credentials, API responses redact the password.
 
+## Telegram-assisted CAPTCHA
+
+Yandex SmartCaptcha ("Вы не робот") cannot be solved automatically. When the browser-worker encounters it during form inspection:
+
+1. The form session status is set to `captcha_required`.
+2. The browser session stays open (not closed) so the page is still live.
+3. The bot sends a Telegram message with four action buttons:
+   - **Открыть проверку** — URL button pointing to the assisted Web UI page (`/forms/{id}/captcha`) where you can interact with the browser screen.
+   - **Я прошёл проверку** — callback button; tap after solving the captcha manually.
+   - **Открыть оригинал** — URL button to the original form URL.
+   - **Отмена** — cancels the session.
+4. You open the link, solve the captcha manually in the browser, then tap **Я прошёл проверку** in Telegram.
+5. The bot re-inspects the page. If fields are found the session advances to `waiting_user_review` and a form review message is sent. If captcha is still shown, you get a retry notification.
+
+The Web UI **Captcha** tab (auto-shown for `captcha_required` forms) displays the form URL, a live screenshot, a **Reinspect** button, and a warning when no public base URL is configured.
+
+To test the flow without a real form use **Create Demo Captcha** on the dashboard.
+
+### Configuration for mobile Telegram users
+
+By default "Открыть проверку" links to `http://127.0.0.1:8080/forms/{id}/captcha`, which only opens on the local machine. To make the link work from a phone:
+
+1. Expose the Web UI through a public HTTPS tunnel (e.g., ngrok, Cloudflare Tunnel).
+2. Set `WEB_PUBLIC_BASE_URL` in `.env`:
+
+```env
+WEB_PUBLIC_BASE_URL=https://your-tunnel.example.com
+WEB_AUTH_TOKEN=your-secret-token
+```
+
+`WEB_PUBLIC_BASE_URL` is used only for Telegram URL buttons. It is not required for local desktop use.
+
+### Experimental remote-control mode
+
+Setting `TELEGRAM_CAPTCHA_REMOTE_CONTROL=true` adds an extra `[Exp] Скриншот` button to the Telegram captcha message. Tapping it triggers a live screenshot via the browser-worker `/session/{id}/screenshot` endpoint. Click coordinates can then be POSTed to `/api/forms/{id}/captcha-click`. This mode is experimental; production use still requires manual captcha interaction.
+
 ## Mail Setup
 
 Default `config/app.example.json` is configured for Yandex Mail:

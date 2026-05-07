@@ -31,6 +31,7 @@ struct telegram_config {
   std::string proxy_url;
   bool poll_updates = true;
   int poll_interval_seconds = 2;
+  bool captcha_remote_control_experimental = false;  // [experimental] screenshot+click in Telegram
 };
 
 struct twilio_config {
@@ -47,6 +48,7 @@ struct http_config {
   std::string host = "127.0.0.1";
   int port = 8080;
   std::string auth_token;
+  std::string web_public_base_url;  // for mobile Telegram; e.g. https://yourdomain.com
 };
 
 struct storage_config {

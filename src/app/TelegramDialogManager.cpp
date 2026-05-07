@@ -127,6 +127,35 @@ void telegram_dialog_manager::handle_callback(const telegram_update& update) {
     if (!err.empty()) workflow.notify_text("Авторизация всё ещё требуется или не удалась: " + err, err);
     return;
   }
+  if (action == "captcha_passed") {
+    answer("");
+    if (!workflow.reinspect_after_captcha(session_id, err) && !err.empty()) {
+      if (err != "captcha is still active") {
+        workflow.notify_text("Ошибка при проверке формы: " + err, err);
+      }
+    }
+    return;
+  }
+  if (action == "captcha_screenshot") {
+    answer("Скриншот...");
+    auto session = store.get_form_session(session_id);
+    if (!session || session->browser_session_id.empty()) {
+      workflow.notify_text("Сессия браузера недоступна.", err);
+      return;
+    }
+    std::string base = workflow.web_base_url();
+    std::string screenshot_url = base + "/api/forms/" + session_id + "/screenshot";
+    std::vector<std::vector<telegram_button>> buttons = {
+        {{"Я прошёл проверку", "form:" + session_id + ":captcha_passed", ""},
+         {"Обновить скриншот", "form:" + session_id + ":captcha_screenshot", ""}},
+        {{"Открыть проверку", "", screenshot_url.substr(0, screenshot_url.find("/api"))}},
+        {{"Отмена", "form:" + session_id + ":cancel", ""}}
+    };
+    workflow.notify_text(
+        "Откройте ссылку для просмотра состояния браузера:\n" + screenshot_url,
+        err);
+    return;
+  }
   if (action == "edit") {
     answer("");
     if (!send_next_answer_prompt(update.chat_id, session_id, err) && !err.empty()) {

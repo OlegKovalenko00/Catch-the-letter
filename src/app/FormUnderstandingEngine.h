@@ -47,3 +47,4 @@ nlohmann::json mapping_summary_to_json(const std::vector<form_field>& fields,
 bool semantic_key_allowed(const std::string& key);
 bool option_value_valid(const form_field& field, const std::string& value);
 std::string normalized_field_text(const form_field& field);
+std::string field_label(const form_field& field);

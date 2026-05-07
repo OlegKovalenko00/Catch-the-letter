@@ -45,6 +45,9 @@ public:
                               const std::string& code,
                               std::string& err);
   bool reinspect_after_auth(const std::string& session_id, std::string& err);
+  bool reinspect_after_captcha(const std::string& session_id, std::string& err);
+  bool send_captcha_message(const form_session& session, std::string& err);
+  std::string web_base_url() const;
   bool update_field_value(const std::string& session_id,
                           const std::string& field_ref,
                           const std::string& value,

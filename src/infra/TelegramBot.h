@@ -11,6 +11,7 @@
 struct telegram_button {
   std::string text;
   std::string callback_data;
+  std::string url;  // for URL buttons (mutually exclusive with callback_data)
 };
 
 struct telegram_update {

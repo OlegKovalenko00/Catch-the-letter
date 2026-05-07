@@ -41,8 +41,11 @@ public:
                                     std::string& err) const;
   std::optional<form_snapshot> reinspect_form(const std::string& browser_session_id,
                                               std::string& err) const;
+  std::string get_screenshot_png(const std::string& browser_session_id, std::string& err) const;
+  bool click_at(const std::string& browser_session_id, int x, int y, std::string& err) const;
 
 private:
+  bool get_binary(const std::string& path, std::string& out_bytes, std::string& err) const;
   bool post_json(const std::string& path,
                  const nlohmann::json& request,
                  nlohmann::json& response,

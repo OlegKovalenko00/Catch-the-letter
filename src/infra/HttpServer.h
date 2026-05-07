@@ -35,6 +35,10 @@ struct http_handlers {
   std::function<std::string(const std::string&, const std::string&)> explain_form_field_json;
   std::function<std::string(const std::string&)> validate_form_json;
   std::function<bool(bool, std::string&)> create_demo_form;
+  std::function<std::string(const std::string&)> get_form_screenshot_png;
+  std::function<bool(const std::string&, const std::string&, std::string&)> captcha_click_form;
+  std::function<bool(const std::string&, std::string&)> captcha_reinspect_form;
+  std::function<bool(std::string&)> create_demo_captcha_form;
 };
 
 class http_server {

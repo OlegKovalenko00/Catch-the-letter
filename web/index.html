@@ -24,6 +24,7 @@
       <button class="nav__item is-active" data-section="dashboard">Dashboard</button>
       <button class="nav__item" data-section="manual">Form Provider Test</button>
       <button class="nav__item" data-section="forms">Active Forms</button>
+      <button class="nav__item" data-section="captcha" id="nav-captcha" style="display:none">Captcha</button>
       <button class="nav__item" data-section="review">Form Review</button>
       <button class="nav__item" data-section="profile">Profile</button>
       <button class="nav__item" data-section="rules">Rules</button>
@@ -58,6 +59,7 @@
           <div class="button-row">
             <button class="button button--primary" id="create-demo-button" type="button">Create Demo Form</button>
             <button class="button button--primary" id="create-demo-auth-button" type="button">Create Demo Auth Form</button>
+            <button class="button" id="create-demo-captcha-button" type="button">Create Demo Captcha</button>
           </div>
           <div class="result-panel" id="test-result" aria-live="polite"></div>
         </div>
@@ -104,6 +106,39 @@
         <div class="cards-list" id="forms-list"></div>
       </section>
 
+      <section class="section" id="section-captcha">
+        <div class="section__header">
+          <div>
+            <p class="section__kicker">Требуется действие</p>
+            <h2>Captcha</h2>
+          </div>
+          <div class="button-row">
+            <button class="button" id="captcha-reinspect-button" type="button">Reinspect после капчи</button>
+            <button class="button button--ghost" id="captcha-open-original-button" type="button">Открыть оригинал</button>
+          </div>
+        </div>
+        <div class="card" id="captcha-card">
+          <div class="badge badge--error" style="margin-bottom:1rem">⚠️ Обнаружена проверка «Вы не робот»</div>
+          <p id="captcha-form-title" style="font-weight:600;margin-bottom:.5rem"></p>
+          <p id="captcha-form-url" style="word-break:break-all;color:#6b7080;margin-bottom:1rem;font-size:.85rem"></p>
+          <p style="color:#6b7080;font-size:.9rem;margin-bottom:1rem">
+            Откройте ссылку «Открыть оригинал», пройдите проверку вручную, затем нажмите
+            <strong>Reinspect</strong> или кнопку «Я прошёл проверку» в Telegram.
+          </p>
+          <div id="captcha-screenshot-wrap" style="margin-bottom:1rem">
+            <img id="captcha-screenshot" alt="Browser screenshot" style="max-width:100%;border:1px solid #d8dee9;border-radius:6px;display:none">
+            <button class="button button--ghost" id="captcha-refresh-screenshot-button" type="button" style="margin-top:.5rem">Обновить скриншот</button>
+          </div>
+          <div class="badge badge--info" id="captcha-telegram-hint">
+            После прохождения можно нажать кнопку в Telegram.
+          </div>
+          <div class="badge badge--warn" id="captcha-local-warn" hidden>
+            Локальный адрес 127.0.0.1 откроется только на этом компьютере.
+          </div>
+          <div class="result-panel" id="captcha-result" aria-live="polite" style="margin-top:1rem"></div>
+        </div>
+      </section>
+
       <section class="section" id="section-review">
         <div class="section__header">
           <div>
@@ -135,8 +170,8 @@
                 <button class="button" id="save-fields-button" type="button">Save</button>
                 <button class="button" id="remap-button" type="button">Remap with AI</button>
                 <button class="button" id="validate-button" type="button">Validate</button>
-                <button class="button button--primary" id="fill-button" type="button">Fill form</button>
-                <button class="button button--primary" id="submit-button" type="button">Submit</button>
+                <button class="button button--primary button--fill" id="fill-button" type="button">Fill form</button>
+                <button class="button button--primary button--fill" id="submit-button" type="button">Submit</button>
                 <button class="button button--ghost" id="manual-button" type="button">Manual</button>
                 <button class="button button--danger" id="cancel-button" type="button">Cancel</button>
               </div>
@@ -149,17 +184,29 @@
         <div class="section__header">
           <div>
             <p class="section__kicker">Данные для автозаполнения</p>
-            <h2>Profile Editor</h2>
+            <h2>Profile</h2>
           </div>
-          <button class="button button--primary" id="save-profile-button" type="button">Save profile</button>
         </div>
         <div class="card">
-          <div class="profile-grid" id="profile-fields"></div>
-          <details class="advanced">
-            <summary>Advanced JSON</summary>
-            <textarea id="profile-json" spellcheck="false"></textarea>
-          </details>
+          <p style="margin:0 0 16px;color:var(--muted)">Заполните поля для автоматического заполнения форм. Данные хранятся только локально.</p>
+          <div class="profile-rows" id="profile-fields"></div>
+          <div class="profile-add-row">
+            <input id="profile-new-key" type="text" list="profile-keys-datalist" placeholder="Имя поля (full_name, phone…)">
+            <datalist id="profile-keys-datalist"></datalist>
+            <input id="profile-new-value" type="text" placeholder="Значение">
+            <button class="button" id="profile-add-button" type="button">+ Добавить</button>
+          </div>
+          <div class="button-row" style="margin-top:18px">
+            <button class="button button--primary button--fill" id="save-profile-button" type="button">Сохранить профиль</button>
+          </div>
           <div class="result-panel" id="profile-result"></div>
+          <details class="advanced">
+            <summary>Редактировать JSON напрямую</summary>
+            <textarea id="profile-json" spellcheck="false"></textarea>
+            <div class="button-row" style="margin-top:8px">
+              <button class="button" id="apply-profile-json-button" type="button">Применить JSON</button>
+            </div>
+          </details>
         </div>
       </section>
 

@@ -686,7 +686,8 @@ std::string app::status_json() const {
       {"startup_probe", cfg.llm.startup_probe},
       {"memory", llm_memory_json(cfg.llm, detect_total_memory_gb())}
   };
-  j["web"] = {{"enabled", cfg.http.enabled}, {"host", cfg.http.host}, {"port", cfg.http.port}};
+  j["web"] = {{"enabled", cfg.http.enabled}, {"host", cfg.http.host}, {"port", cfg.http.port},
+              {"web_public_base_url", cfg.http.web_public_base_url}};
   j["mailboxes_status"] = nlohmann::json::array();
   for (const auto& mailbox : mailboxes) {
     j["mailboxes_status"].push_back({
@@ -966,6 +967,14 @@ std::string app::config_json() const {
       {"two_factor_via_telegram", cfg.auth.two_factor_via_telegram},
       {"two_factor_via_web", cfg.auth.two_factor_via_web}
   };
+  out["web"] = {
+      {"enabled", cfg.http.enabled},
+      {"host", cfg.http.host},
+      {"port", cfg.http.port},
+      {"auth_token_configured", !cfg.http.auth_token.empty()},
+      {"web_public_base_url", cfg.http.web_public_base_url}
+  };
+  out["telegram"]["captcha_remote_control_experimental"] = cfg.telegram.captcha_remote_control_experimental;
   out["profile_file"] = cfg.profile_file;
   out["rules_file"] = cfg.rules_file;
   return out.dump(2);
@@ -1247,7 +1256,24 @@ std::string app::inspect_form_url_json(const std::string& body) {
     out["captcha_required"] = inspected.captcha_required;
     out["provider_error"] = inspected.error;
     out["browser_fallback_allowed"] = route.allow_browser_fallback;
-    if (!inspected.ok) return api_error(inspected.error.empty() ? "provider inspect failed" : inspected.error, out).dump(2);
+    if (!inspected.ok) {
+      if (route.allow_browser_fallback && browser_ptr) {
+        std::string berr;
+        auto snap = browser_ptr->inspect_form(url, berr, debug);
+        if (snap.has_value()) {
+          nlohmann::json bout = form_snapshot_to_json(*snap);
+          bout["provider_type"] = "yandex_forms";
+          bout["provider_name"] = "Yandex Forms";
+          bout["extraction_strategy"] = snap->captcha_required ? "captcha_blocked" : "browser_dom";
+          bout["submit_strategy"] = snap->captcha_required ? "manual" : "browser_worker";
+          bout["browser_fallback_used"] = true;
+          bout["provider_error"] = inspected.error;
+          if (!snap->session_id.empty()) { std::string ce; browser_ptr->close_session(snap->session_id, ce); }
+          return api_success("form inspected via browser fallback", bout).dump(2);
+        }
+      }
+      return api_error(inspected.error.empty() ? "provider inspect failed" : inspected.error, out).dump(2);
+    }
     return api_success("form inspected through provider", out).dump(2);
   }
   if (route.provider_type == form_provider_type::google_forms) {
@@ -1264,7 +1290,24 @@ std::string app::inspect_form_url_json(const std::string& body) {
     out["captcha_required"] = inspected.captcha_required;
     out["provider_error"] = inspected.error;
     out["browser_fallback_allowed"] = route.allow_browser_fallback;
-    if (!inspected.ok) return api_error(inspected.error.empty() ? "provider inspect failed" : inspected.error, out).dump(2);
+    if (!inspected.ok) {
+      if (route.allow_browser_fallback && browser_ptr) {
+        std::string berr;
+        auto snap = browser_ptr->inspect_form(url, berr, debug);
+        if (snap.has_value()) {
+          nlohmann::json bout = form_snapshot_to_json(*snap);
+          bout["provider_type"] = "google_forms";
+          bout["provider_name"] = "Google Forms";
+          bout["extraction_strategy"] = snap->captcha_required ? "captcha_blocked" : "browser_dom";
+          bout["submit_strategy"] = snap->captcha_required ? "manual" : "browser_worker";
+          bout["browser_fallback_used"] = true;
+          bout["provider_error"] = inspected.error;
+          if (!snap->session_id.empty()) { std::string ce; browser_ptr->close_session(snap->session_id, ce); }
+          return api_success("form inspected via browser fallback", bout).dump(2);
+        }
+      }
+      return api_error(inspected.error.empty() ? "provider inspect failed" : inspected.error, out).dump(2);
+    }
     return api_success("form inspected through provider", out).dump(2);
   }
   auto snapshot = browser_ptr->inspect_form(url, err, debug);
@@ -1347,13 +1390,7 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
       mapped.title = session.title;
       mapped.debug_json = inspected.debug_json;
       session.fields = llm_ptr->map_fields(msg, mapped, profile);
-    } else {
-      session.status = "manual_required";
-      session.submit_strategy = "manual";
-      session.provider_error = inspected.error;
-    }
-    std::string id = storage_ptr->create_form_session(session);
-    if (inspected.ok) {
+      std::string id = storage_ptr->create_form_session(session);
       auto saved = storage_ptr->get_form_session(id);
       if (saved && saved->status == "waiting_user_review") {
         std::string send_err;
@@ -1364,16 +1401,25 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
       return api_success("provider form session created",
                          {{"session_id", id}, {"status", session.status}, {"provider_type", session.provider_type}}).dump(2);
     }
-    append_event("warning", "provider_manual_required", inspected.error,
-                 {{"session_id", id}, {"provider", session.provider_type}, {"browser_fallback_allowed", route.allow_browser_fallback}});
-    nlohmann::json details = {
-        {"session_id", id},
-        {"status", session.status},
-        {"provider_type", session.provider_type},
-        {"provider_error", inspected.error},
-        {"browser_fallback_allowed", route.allow_browser_fallback}
-    };
-    return api_error(inspected.error.empty() ? "provider setup required" : inspected.error, details).dump(2);
+    if (!route.allow_browser_fallback || !browser_ptr) {
+      session.status = "manual_required";
+      session.submit_strategy = "manual";
+      session.provider_error = inspected.error;
+      std::string id = storage_ptr->create_form_session(session);
+      append_event("warning", "provider_manual_required", inspected.error,
+                   {{"session_id", id}, {"provider", session.provider_type}, {"browser_fallback_allowed", false}});
+      nlohmann::json details = {
+          {"session_id", id},
+          {"status", session.status},
+          {"provider_type", session.provider_type},
+          {"provider_error", inspected.error},
+          {"browser_fallback_allowed", false}
+      };
+      return api_error(inspected.error.empty() ? "provider setup required" : inspected.error, details).dump(2);
+    }
+    // Provider check failed but browser fallback is allowed — continue to browser inspection below.
+    append_event("info", "provider_failed_browser_fallback", "Provider check failed, trying browser fallback",
+                 {{"provider", session.provider_type}, {"url", sanitize_url_for_log(url)}, {"error", inspected.error}});
   }
 
   auto snapshot = browser_ptr->inspect_form(url, err, debug);
@@ -1420,9 +1466,8 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
     session.status = "waiting_auth";
     session.auth_state_json = nlohmann::json({{"state", "required"}, {"url", snapshot->final_url}}).dump();
   } else if (snapshot->captcha_required) {
-    session.status = "manual_required";
-    session.submit_strategy = "manual";
-    session.provider_error = "captcha_required";
+    session.status = "captcha_required";
+    session.captcha_required = true;
   } else if (snapshot->fields.empty()) {
     session.status = "manual_required";
   } else {
@@ -1431,9 +1476,13 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
   }
   std::string id = storage_ptr->create_form_session(session);
   auto saved = storage_ptr->get_form_session(id);
-  if (saved && saved->status == "waiting_user_review") {
+  if (saved) {
     std::string send_err;
-    workflow_ptr->send_form_review(*saved, send_err);
+    if (saved->status == "waiting_user_review") {
+      workflow_ptr->send_form_review(*saved, send_err);
+    } else if (saved->status == "captcha_required") {
+      workflow_ptr->send_captcha_message(*saved, send_err);
+    }
   }
   append_event("info", "manual_form_session_created", "Manual form session created",
                {{"session_id", id}, {"status", session.status}, {"url", sanitize_url_for_log(url)}});
@@ -1593,4 +1642,31 @@ bool app::create_demo_form(bool auth_demo, std::string& err) {
   std::string url = cfg.browser_worker.endpoint + (auth_demo ? "/demo-auth-form" : "/demo-form");
   std::string title = auth_demo ? "Demo auth form" : "Demo form";
   return workflow_ptr->create_demo_session(url, title, auth_demo, err);
+}
+
+bool app::create_demo_captcha_form(std::string& err) {
+  std::string url = cfg.browser_worker.endpoint + "/demo-captcha-then-form";
+  return workflow_ptr->create_demo_session(url, "Demo captcha then form", false, err);
+}
+
+std::string app::form_screenshot_png(const std::string& id) {
+  auto session = storage_ptr->get_form_session(id);
+  if (!session || session->browser_session_id.empty()) return {};
+  std::string err;
+  return browser_ptr->get_screenshot_png(session->browser_session_id, err);
+}
+
+bool app::captcha_click_form(const std::string& id, const std::string& body, std::string& err) {
+  auto session = storage_ptr->get_form_session(id);
+  if (!session) { err = "form session not found"; return false; }
+  if (session->browser_session_id.empty()) { err = "no browser session"; return false; }
+  nlohmann::json parsed;
+  if (!json_util::parse(body.empty() ? "{}" : body, parsed, &err)) return false;
+  int x = parsed.value("x", 0);
+  int y = parsed.value("y", 0);
+  return browser_ptr->click_at(session->browser_session_id, x, y, err);
+}
+
+bool app::captcha_reinspect_form(const std::string& id, std::string& err) {
+  return workflow_ptr->reinspect_after_captcha(id, err);
 }

@@ -82,6 +82,10 @@ public:
   std::string explain_form_field_json(const std::string& id, const std::string& body);
   std::string validate_form_json(const std::string& id);
   bool create_demo_form(bool auth_demo, std::string& err);
+  bool create_demo_captcha_form(std::string& err);
+  std::string form_screenshot_png(const std::string& id);
+  bool captcha_click_form(const std::string& id, const std::string& body, std::string& err);
+  bool captcha_reinspect_form(const std::string& id, std::string& err);
 
 private:
   mailbox_checkpoint ensure_checkpoint(mailbox_runtime& mailbox);
