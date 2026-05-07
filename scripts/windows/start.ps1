@@ -13,7 +13,9 @@ Write-Host "  - Native Ollama: LLM_ENDPOINT=http://host.docker.internal:11434/ap
 Write-Host "  - Docker Ollama: run .\scripts\windows\start-llm-docker.ps1"
 Write-Host ""
 
-docker compose -f docker-compose.yml -f docker-compose.windows.yml up --build
+# Use standalone Windows config for proper port binding
+docker compose -f docker-compose.windows-standalone.yml up --build
 
 Write-Host ""
 Write-Host "=== Stopped ===" -ForegroundColor Yellow
+

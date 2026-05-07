@@ -13,10 +13,11 @@ Write-Host "Setting LLM_ENDPOINT to http://ollama:11434/api/chat" -ForegroundCol
 $env:LLM_ENDPOINT = "http://ollama:11434/api/chat"
 
 Write-Host ""
-Write-Host "Starting Docker compose with llm profile..." -ForegroundColor Cyan
+Write-Host "Starting Docker compose with llm profile and standalone config..." -ForegroundColor Cyan
 Write-Host ""
 
-docker compose -f docker-compose.yml -f docker-compose.windows.yml --profile llm up --build
+# Use standalone Windows config for proper port binding
+docker compose -f docker-compose.windows-standalone.yml --profile llm up --build
 
 Write-Host ""
 Write-Host "=== Stopped ===" -ForegroundColor Yellow

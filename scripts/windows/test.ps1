@@ -9,8 +9,9 @@ Set-Location $ProjectRoot
 Write-Host "=== Catch-the-letter Windows Tests ===" -ForegroundColor Green
 Write-Host ""
 
-$BaseUrl = "http://127.0.0.1:8080"
-$BrowserWorkerUrl = "http://127.0.0.1:8090"
+# On Windows Docker Desktop, ports are accessible via localhost (not 127.0.0.1 required)
+$BaseUrl = "http://localhost:8080"
+$BrowserWorkerUrl = "http://localhost:8090"
 $Errors = 0
 
 # Test function

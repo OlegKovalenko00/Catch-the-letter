@@ -38,10 +38,12 @@ if (-Not (Test-Path ".env")) {
     exit 1
 }
 
-Write-Host "Starting Docker compose..." -ForegroundColor Cyan
+Write-Host "Starting Docker compose with standalone config..." -ForegroundColor Cyan
 Write-Host ""
 
-docker compose -f docker-compose.yml -f docker-compose.windows.yml up --build
+# Use standalone Windows config for proper port binding
+docker compose -f docker-compose.windows-standalone.yml up --build
 
 Write-Host ""
 Write-Host "=== Stopped ===" -ForegroundColor Yellow
+

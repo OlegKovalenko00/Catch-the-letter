@@ -117,7 +117,7 @@ The script creates `.env`, `config/app.json`, `config/rules.json`, `config/profi
 .\scripts\windows\start.ps1
 ```
 
-Access: `http://127.0.0.1:8080`
+Access: `http://localhost:8080`
 
 ### Mode B: With Native Ollama (recommended for powerful PC)
 
@@ -142,7 +142,7 @@ Start:
 .\scripts\windows\start-llm-native.ps1
 ```
 
-Access: `http://127.0.0.1:8080`
+Access: `http://localhost:8080`
 
 ### Mode C: With Docker Ollama
 
@@ -151,7 +151,7 @@ $env:LLM_ENDPOINT="http://ollama:11434/api/chat"
 .\scripts\windows\start-llm-docker.ps1
 ```
 
-Access: `http://127.0.0.1:8080`
+Access: `http://localhost:8080`
 
 ### Tests
 
@@ -177,6 +177,17 @@ TELEGRAM_PROXY_URL=http://host.docker.internal:10809
 ```
 
 Do not use `127.0.0.1:10809` from inside Docker bridge; use `host.docker.internal` instead.
+
+### Port Binding on Windows
+
+**Important**: Windows Docker Desktop has special port binding requirements:
+- Do NOT bind ports to `127.0.0.1` explicitly in the override file
+- Use simple port mapping: `"8080:8080"` instead of `"127.0.0.1:8080:8080"`
+- Docker Desktop automatically makes ports accessible on `localhost`
+- Access the app via `http://localhost:8080`, not `http://127.0.0.1:8080`
+
+The app uses `docker-compose.windows-standalone.yml` which has correct port bindings for Windows.
+
 
 ### Troubleshooting on Windows
 
