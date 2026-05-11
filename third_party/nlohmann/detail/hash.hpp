@@ -1,16 +1,11 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
-#include <cstdint> // uint8_t
-#include <cstddef> // size_t
-#include <functional> // hash
+#include <cstdint>
+#include <cstddef>
+#include <functional>
 
 #include <nlohmann/detail/abi_macros.hpp>
 #include <nlohmann/detail/value_t.hpp>
@@ -19,24 +14,14 @@ NLOHMANN_JSON_NAMESPACE_BEGIN
 namespace detail
 {
 
-// boost::hash_combine
+
 inline std::size_t combine(std::size_t seed, std::size_t h) noexcept
 {
     seed ^= h + 0x9e3779b9 + (seed << 6U) + (seed >> 2U);
     return seed;
 }
 
-/*!
-@brief hash a JSON value
 
-The hash function tries to rely on std::hash where possible. Furthermore, the
-type of the JSON value is taken into account to have different hash values for
-null, 0, 0U, and false, etc.
-
-@tparam BasicJsonType basic_json specialization
-@param j JSON value to hash
-@return hash value of j
-*/
 template<typename BasicJsonType>
 std::size_t hash(const BasicJsonType& j)
 {
@@ -119,11 +104,11 @@ std::size_t hash(const BasicJsonType& j)
             return seed;
         }
 
-        default:                   // LCOV_EXCL_LINE
-            JSON_ASSERT(false); // NOLINT(cert-dcl03-c,hicpp-static-assert,misc-static-assert) LCOV_EXCL_LINE
-            return 0;              // LCOV_EXCL_LINE
+        default:
+            JSON_ASSERT(false);
+            return 0;
     }
 }
 
-}  // namespace detail
+}
 NLOHMANN_JSON_NAMESPACE_END

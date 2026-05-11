@@ -1,21 +1,16 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
-#include <algorithm> // copy
-#include <iterator> // begin, end
-#include <string> // string
-#include <tuple> // tuple, get
-#include <type_traits> // is_same, is_constructible, is_floating_point, is_enum, underlying_type
-#include <utility> // move, forward, declval, pair
-#include <valarray> // valarray
-#include <vector> // vector
+#include <algorithm>
+#include <iterator>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <valarray>
+#include <vector>
 
 #include <nlohmann/detail/iterators/iteration_proxy.hpp>
 #include <nlohmann/detail/macro_scope.hpp>
@@ -28,16 +23,6 @@ NLOHMANN_JSON_NAMESPACE_BEGIN
 namespace detail
 {
 
-//////////////////
-// constructors //
-//////////////////
-
-/*
- * Note all external_constructor<>::construct functions need to call
- * j.m_data.m_value.destroy(j.m_data.m_type) to avoid a memory leak in case j contains an
- * allocated value (e.g., a string). See bug issue
- * https://github.com/nlohmann/json/issues/2865 for more information.
- */
 
 template<value_t> struct external_constructor;
 
@@ -256,9 +241,6 @@ struct external_constructor<value_t::object>
     }
 };
 
-/////////////
-// to_json //
-/////////////
 
 template<typename BasicJsonType, typename T,
          enable_if_t<std::is_same<T, typename BasicJsonType::boolean_t>::value, int> = 0>
@@ -322,7 +304,7 @@ inline void to_json(BasicJsonType& j, EnumType e) noexcept
     using underlying_type = typename std::underlying_type<EnumType>::type;
     external_constructor<value_t::number_integer>::construct(j, static_cast<underlying_type>(e));
 }
-#endif  // JSON_DISABLE_ENUM_SERIALIZATION
+#endif
 
 template<typename BasicJsonType>
 inline void to_json(BasicJsonType& j, const std::vector<bool>& e)
@@ -378,9 +360,9 @@ inline void to_json(BasicJsonType& j, typename BasicJsonType::object_t&& obj)
 template <
     typename BasicJsonType, typename T, std::size_t N,
     enable_if_t < !std::is_constructible<typename BasicJsonType::string_t,
-                  const T(&)[N]>::value, // NOLINT(cppcoreguidelines-avoid-c-arrays,hicpp-avoid-c-arrays,modernize-avoid-c-arrays)
+                  const T(&)[N]>::value,
                   int > = 0 >
-inline void to_json(BasicJsonType& j, const T(&arr)[N]) // NOLINT(cppcoreguidelines-avoid-c-arrays,hicpp-avoid-c-arrays,modernize-avoid-c-arrays)
+inline void to_json(BasicJsonType& j, const T(&arr)[N])
 {
     external_constructor<value_t::array>::construct(j, arr);
 }
@@ -391,7 +373,7 @@ inline void to_json(BasicJsonType& j, const std::pair<T1, T2>& p)
     j = { p.first, p.second };
 }
 
-// for https://github.com/nlohmann/json/pull/1134
+
 template<typename BasicJsonType, typename T,
          enable_if_t<std::is_same<T, iteration_proxy_value<typename BasicJsonType::iterator>>::value, int> = 0>
 inline void to_json(BasicJsonType& j, const T& b)
@@ -400,7 +382,7 @@ inline void to_json(BasicJsonType& j, const T& b)
 }
 
 template<typename BasicJsonType, typename Tuple, std::size_t... Idx>
-inline void to_json_tuple_impl(BasicJsonType& j, const Tuple& t, index_sequence<Idx...> /*unused*/)
+inline void to_json_tuple_impl(BasicJsonType& j, const Tuple& t, index_sequence<Idx...> )
 {
     j = { std::get<Idx>(t)... };
 }
@@ -428,19 +410,18 @@ struct to_json_fn
         return to_json(j, std::forward<T>(val));
     }
 };
-}  // namespace detail
+}
 
 #ifndef JSON_HAS_CPP_17
-/// namespace to hold default `to_json` function
-/// to see why this is required:
-/// http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2015/n4381.html
-namespace // NOLINT(cert-dcl59-cpp,fuchsia-header-anon-namespaces,google-build-namespaces)
+
+
+namespace
 {
 #endif
-JSON_INLINE_VARIABLE constexpr const auto& to_json = // NOLINT(misc-definitions-in-headers)
+JSON_INLINE_VARIABLE constexpr const auto& to_json =
     detail::static_const<detail::to_json_fn>::value;
 #ifndef JSON_HAS_CPP_17
-}  // namespace
+}
 #endif
 
 NLOHMANN_JSON_NAMESPACE_END

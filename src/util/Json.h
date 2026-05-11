@@ -30,4 +30,4 @@ inline bool parse(const std::string& text, nlohmann::json& out, std::string* err
   }
 }
 
-} 
+}

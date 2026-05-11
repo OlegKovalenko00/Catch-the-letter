@@ -191,7 +191,7 @@ std::vector<form_field> parse_api_questions(const json& root) {
   return fields;
 }
 
-}  // namespace
+}
 
 yandex_forms_provider::yandex_forms_provider(yandex_forms_api_config cfg) : cfg(std::move(cfg)) {}
 

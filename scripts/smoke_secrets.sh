@@ -8,7 +8,7 @@ if [[ -d data ]]; then
   while IFS= read -r -d '' file; do targets+=("$file"); done < <(find data -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.log' \) -print0)
 fi
 
-if ((${#targets[@]})); then
+if ((${
   if grep -aE "$patterns" "${targets[@]}" >/tmp/catch-letter-secret-hits.txt; then
     echo "secret-like values found:"
     cat /tmp/catch-letter-secret-hits.txt

@@ -1,16 +1,11 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
-#include <cstring> // strlen
-#include <string> // string
-#include <utility> // forward
+#include <cstring>
+#include <string>
+#include <utility>
 
 #include <nlohmann/detail/meta/cpp_future.hpp>
 #include <nlohmann/detail/meta/detected.hpp>
@@ -31,7 +26,7 @@ template<typename StringType, typename... Args>
 inline std::size_t concat_length(const StringType& str, const Args& ... rest);
 
 template<typename... Args>
-inline std::size_t concat_length(const char /*c*/, const Args& ... rest)
+inline std::size_t concat_length(const char , const Args& ... rest)
 {
     return 1 + concat_length(rest...);
 }
@@ -39,7 +34,7 @@ inline std::size_t concat_length(const char /*c*/, const Args& ... rest)
 template<typename... Args>
 inline std::size_t concat_length(const char* cstr, const Args& ... rest)
 {
-    // cppcheck-suppress ignoredReturnValue
+
     return ::strlen(cstr) + concat_length(rest...);
 }
 
@@ -50,7 +45,7 @@ inline std::size_t concat_length(const StringType& str, const Args& ... rest)
 }
 
 template<typename OutStringType>
-inline void concat_into(OutStringType& /*out*/)
+inline void concat_into(OutStringType& )
 {}
 
 template<typename StringType, typename Arg>
@@ -142,5 +137,5 @@ inline OutStringType concat(Args && ... args)
     return str;
 }
 
-}  // namespace detail
+}
 NLOHMANN_JSON_NAMESPACE_END

@@ -1,6 +1,7 @@
 #include "LlmClient.h"
 
 #include "../app/FormUnderstandingEngine.h"
+#include "../app/ProfileFactGraph.h"
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -184,24 +185,66 @@ class ollama_client final : public llm_client {
 public:
   explicit ollama_client(llm_config cfg) : cfg(std::move(cfg)), fallback(make_noop_llm_client()) {}
 
+  static int level_rank(importance_level level) {
+    switch (level) {
+      case importance_level::critical: return 4;
+      case importance_level::high:     return 3;
+      case importance_level::medium:   return 2;
+      case importance_level::low:      return 1;
+      case importance_level::ignore:   return 0;
+    }
+    return 0;
+  }
+
   email_analysis analyze_email(const message& msg) override {
     json response;
     std::string err;
-    if (!chat(build_email_prompt(msg), response, err)) return fallback->analyze_email(msg);
+
+    email_analysis out = fallback->analyze_email(msg);
+    out.contains_links       = !msg.links.empty();
+    out.contains_attachments = !msg.attachments.empty();
+
+
+    const email_analysis fallback_snapshot = out;
+
+    if (!chat(build_email_prompt(msg), response, err)) return out;
 
     try {
       std::string content = response.at("message").at("content").get<std::string>();
       json parsed = json::parse(content);
-      email_analysis out = fallback->analyze_email(msg);
-      std::string kind = parsed.value("kind", "unknown");
-      if (kind == "important_notification") out.kind = message_kind::important_notification;
-      else if (kind == "form_request") out.kind = message_kind::form_request;
-      else if (kind == "auth_required") out.kind = message_kind::auth_required;
-      else if (kind == "ignored") out.kind = message_kind::ignored;
-      else out.kind = message_kind::unknown;
-      out.confidence = clamp01(parsed.value("confidence", out.confidence));
-      out.summary = parsed.value("summary", out.summary);
+
+      std::string kind_str = parsed.value("kind", "unknown");
+      if      (kind_str == "important_notification") out.kind = message_kind::important_notification;
+      else if (kind_str == "action_required")        out.kind = message_kind::action_required;
+      else if (kind_str == "form_request")           out.kind = message_kind::form_request;
+      else if (kind_str == "auth_required")          out.kind = message_kind::auth_required;
+      else if (kind_str == "ignored")                out.kind = message_kind::ignored;
+      else                                           out.kind = message_kind::unknown;
+
+      out.confidence       = clamp01(parsed.value("confidence", out.confidence));
+      out.importance_score = clamp01(parsed.value("importance_score", out.importance_score));
+      out.summary          = parsed.value("summary",       out.summary);
+      out.safe_preview     = parsed.value("safe_preview",  out.safe_preview);
+      out.deadline_text    = parsed.value("deadline_text", out.deadline_text);
       out.user_action_required = parsed.value("user_action_required", out.user_action_required);
+      out.should_notify        = parsed.value("should_notify",        out.should_notify);
+      out.contains_form        = parsed.value("contains_form",        out.contains_form);
+
+      std::string lvl = parsed.value("importance_level", "");
+      if (!lvl.empty()) out.level = parse_importance_level(lvl);
+
+      std::string cat = parsed.value("category", "");
+      if (!cat.empty()) out.category = parse_email_category(cat);
+
+      std::string urg = parsed.value("urgency", "");
+      if (!urg.empty()) out.urgency = parse_email_urgency(urg);
+
+      if (parsed.contains("reasons") && parsed["reasons"].is_array()) {
+        out.reasons.clear();
+        for (const auto& r : parsed["reasons"])
+          if (r.is_string()) out.reasons.push_back(r.get<std::string>());
+      }
+
       if (parsed.contains("form_links") && parsed["form_links"].is_array()) {
         out.form_links.clear();
         for (const auto& item : parsed["form_links"]) {
@@ -213,15 +256,37 @@ public:
           }
         }
       }
+
+
+      if (fallback_snapshot.should_notify &&
+          level_rank(fallback_snapshot.level) >= level_rank(importance_level::high)) {
+        if (!out.should_notify) {
+          out.should_notify = true;
+          out.reasons.push_back("llm_downgrade_rejected_should_notify");
+        }
+        if (level_rank(out.level) < level_rank(fallback_snapshot.level)) {
+          out.level = fallback_snapshot.level;
+          out.reasons.push_back("llm_downgrade_rejected_level");
+        }
+        if (out.kind == message_kind::ignored &&
+            fallback_snapshot.kind != message_kind::ignored) {
+          out.kind = fallback_snapshot.kind;
+          out.reasons.push_back("llm_downgrade_rejected_kind");
+        }
+      }
+
       return out;
     } catch (...) {
-      return fallback->analyze_email(msg);
+      return out;
     }
   }
 
   std::vector<form_field> map_fields(const message& msg,
                                      const form_snapshot& form,
                                      const user_profile& profile) override {
+    user_profile expanded = profile;
+    expand_profile_facts(expanded);
+
     json fields = json::array();
     for (const auto& f : form.fields) {
       json options = json::array();
@@ -246,10 +311,8 @@ public:
     }
 
     json profile_json;
-    for (const auto& [key, value] : profile.values) {
-      if (cfg.privacy_mode == "safe" && is_sensitive_key(key)) {
-        continue;
-      }
+    for (const auto& [key, value] : expanded.values) {
+      if (cfg.privacy_mode == "safe" && is_sensitive_key(key)) continue;
       if (value.empty()) continue;
       profile_json[key] = value;
     }
@@ -279,7 +342,7 @@ public:
 
     json response;
     std::string err;
-    auto fallback_fields = fallback->map_fields(msg, form, profile);
+    auto fallback_fields = fallback->map_fields(msg, form, expanded);
     if (!chat(prompt.str(), response, err)) return fallback_fields;
 
     try {
@@ -300,14 +363,36 @@ public:
         for (auto& field : fallback_fields) {
           if (field.id != id) continue;
           if (field.user_modified) continue;
-          field.semantic_key = item.value("semantic_key", field.semantic_key);
-          if (!semantic_key_allowed(field.semantic_key)) {
-            field.semantic_key = "unknown";
-            field.requires_user_input = true;
-            field.reason = "LLM returned unsupported semantic key";
-            field.risk = "high";
+
+
+          const bool is_protected = (field.source == "rule" &&
+                                     field.confidence >= 0.85 &&
+                                     (!field.value.empty() || !field.values.empty()));
+
+
+          {
+            const std::string llm_key = item.value("semantic_key", std::string{});
+            if (!llm_key.empty()) {
+              if (!semantic_key_allowed(llm_key)) {
+                if (!is_protected) {
+                  field.semantic_key = "unknown";
+                  field.requires_user_input = true;
+                  field.reason = "LLM returned unsupported semantic key";
+                  field.risk = "high";
+                }
+                continue;
+              }
+              field.semantic_key = llm_key;
+            }
+          }
+
+          if (is_protected) {
+
+            field.confidence = std::max(field.confidence,
+                                        clamp01(item.value("confidence", 0.0)));
             continue;
           }
+
           field.mapped_profile_key = item.value("mapped_profile_key", field.mapped_profile_key);
           if (cfg.privacy_mode == "safe" && is_sensitive_key(field.mapped_profile_key)) {
             field.requires_user_input = true;
@@ -347,7 +432,7 @@ public:
           if (is_opinion_field(field) && field.value.empty()) field.requires_user_input = true;
         }
       }
-      finalize_form_understanding(fallback_fields, profile, previous_by_id, {});
+      finalize_form_understanding(fallback_fields, expanded, previous_by_id, {});
       return fallback_fields;
     } catch (...) {
       return fallback_fields;
@@ -360,20 +445,46 @@ private:
     for (const auto& item : msg.links) {
       links.push_back({{"url", item.url}, {"domain", item.domain}, {"confidence", item.confidence}});
     }
+    json attachments = json::array();
+    for (const auto& att : msg.attachments) {
+      attachments.push_back({{"filename", att.filename}, {"mime_type", att.mime_type}});
+    }
+    std::string body_excerpt = msg.body_text.empty() ? msg.body : msg.body_text;
+    if (body_excerpt.size() > 6000) body_excerpt = body_excerpt.substr(0, 6000) + "…";
 
     std::ostringstream prompt;
-    prompt << "Проанализируй письмо. Верни только JSON: "
-              "{\"kind\":\"ignored|important_notification|form_request|auth_required|unknown\","
-              "\"confidence\":0.0,\"summary\":\"...\",\"user_action_required\":true,"
-              "\"form_links\":[{\"url\":\"...\",\"domain\":\"...\",\"confidence\":0.0}]}.\n"
-           << "form_request — письмо с НОВОЙ формой для заполнения. "
-              "Письма-подтверждения/квитанции об уже отправленных ответах (слова: 'ваш ответ получен', 'form submitted', 'answers', '/admin/') "
-              "классифицируй как 'ignored'. "
-              "form_links — только ссылки на заполняемые формы (НЕ на /admin/, /answers/, /viewanalytics).\n"
-           << "От: " << msg.from << "\n"
-           << "Тема: " << msg.subject << "\n"
-           << "Текст: " << msg.snippet << "\n"
-           << "Ссылки: " << links.dump();
+    prompt <<
+      "Проанализируй письмо. Верни ТОЛЬКО JSON без пояснений:\n"
+      "{\n"
+      "  \"kind\": \"ignored|important_notification|action_required|form_request|auth_required|unknown\",\n"
+      "  \"confidence\": 0.0-1.0,\n"
+      "  \"importance_score\": 0.0-1.0,\n"
+      "  \"importance_level\": \"critical|high|medium|low|ignore\",\n"
+      "  \"category\": \"academic|admin|finance|security|form|schedule|document|spam|other\",\n"
+      "  \"urgency\": \"immediate|today|this_week|no_deadline|unknown\",\n"
+      "  \"summary\": \"...\",\n"
+      "  \"safe_preview\": \"краткое безопасное превью без ПДн\",\n"
+      "  \"user_action_required\": true|false,\n"
+      "  \"should_notify\": true|false,\n"
+      "  \"contains_form\": true|false,\n"
+      "  \"deadline_text\": \"...\",\n"
+      "  \"reasons\": [\"...\"],\n"
+      "  \"form_links\": [{\"url\":\"...\",\"domain\":\"...\",\"confidence\":0.0}]\n"
+      "}\n"
+      "Правила:\n"
+      "- form_request: письмо с НОВОЙ формой для заполнения.\n"
+      "- action_required: требует действия, но не заполнение формы (задолженность, срок, приказ).\n"
+      "- Подтверждения/квитанции (ваш ответ получен, form submitted, /admin/, /answers/) → ignored.\n"
+      "- form_links: только реальные ссылки для заполнения (НЕ /admin/, /answers/, /viewanalytics).\n"
+      "- safe_preview: без номеров документов, паролей, ИНН, СНИЛС.\n"
+      "- deadline_text: дата/срок если явно указан, иначе пустая строка.\n"
+      << "От: " << msg.from << "\n"
+      << "Тема: " << msg.subject << "\n"
+      << "Сниппет: " << msg.snippet << "\n";
+    if (!body_excerpt.empty())
+      prompt << "Тело письма:\n" << body_excerpt << "\n";
+    prompt << "Ссылки: " << links.dump() << "\n"
+           << "Вложения: " << attachments.dump();
     return prompt.str();
   }
 
@@ -393,7 +504,7 @@ private:
   std::unique_ptr<llm_client> fallback;
 };
 
-}  // namespace
+}
 
 std::unique_ptr<llm_client> make_ollama_client(const llm_config& cfg) {
   return std::make_unique<ollama_client>(cfg);

@@ -31,7 +31,7 @@ struct telegram_config {
   std::string proxy_url;
   bool poll_updates = true;
   int poll_interval_seconds = 2;
-  bool captcha_remote_control_experimental = false;  // [experimental] screenshot+click in Telegram
+  bool captcha_remote_control_experimental = false;
 };
 
 struct twilio_config {
@@ -48,7 +48,7 @@ struct http_config {
   std::string host = "127.0.0.1";
   int port = 8080;
   std::string auth_token;
-  std::string web_public_base_url;  // for mobile Telegram; e.g. https://yourdomain.com
+  std::string web_public_base_url;
 };
 
 struct storage_config {
@@ -130,6 +130,36 @@ struct auth_config {
   bool two_factor_via_web = true;
 };
 
+struct mail_processing_config {
+  bool classify_unmatched_with_llm = true;
+  bool notify_important_without_rules = true;
+  bool store_all_fetched = true;
+  bool store_body_for_important = true;
+  int max_body_chars_to_store = 20000;
+  int max_body_chars_to_llm = 6000;
+  std::string notify_min_importance = "high";
+  double llm_confidence_threshold = 0.65;
+  bool fallback_keyword_importance = true;
+  bool mark_seen_after_success = false;
+};
+
+struct attachments_config {
+  bool enabled = true;
+  bool fetch_on_demand = true;
+  bool telegram_send_enabled = true;
+  int max_telegram_size_mb = 20;
+  int max_download_size_mb = 50;
+  std::vector<std::string> dangerous_extensions = {
+      "exe", "bat", "cmd", "scr", "js", "vbs", "jar", "msi", "ps1", "sh", "apk"
+  };
+  std::vector<std::string> warn_extensions = {"zip", "rar", "7z", "docm", "xlsm"};
+  int retention_hours = 24;
+};
+
+struct debug_config {
+  bool imap_parse_diagnostics = false;
+};
+
 struct app_config {
   imap_config imap;
   std::vector<imap_config> mailboxes;
@@ -144,6 +174,9 @@ struct app_config {
   llm_config llm;
   security_config security;
   auth_config auth;
+  mail_processing_config mail_processing;
+  attachments_config attachments;
+  debug_config debug;
   std::string profile_file = "config/profile.json";
   std::string rules_file = "config/rules.json";
   int max_retries = 3;

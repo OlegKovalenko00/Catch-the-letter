@@ -1,29 +1,23 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
-#include <functional> // equal_to, less
-#include <initializer_list> // initializer_list
-#include <iterator> // input_iterator_tag, iterator_traits
-#include <memory> // allocator
-#include <stdexcept> // for out_of_range
-#include <type_traits> // enable_if, is_convertible
-#include <utility> // pair
-#include <vector> // vector
+#include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <memory>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <nlohmann/detail/macro_scope.hpp>
 #include <nlohmann/detail/meta/type_traits.hpp>
 
 NLOHMANN_JSON_NAMESPACE_BEGIN
 
-/// ordered_map: a minimal map-like container that preserves insertion order
-/// for use within nlohmann::basic_json<ordered_map>
+
 template <class Key, class T, class IgnoredLess = std::less<Key>,
           class Allocator = std::allocator<std::pair<const Key, T>>>
                   struct ordered_map : std::vector<std::pair<const Key, T>, Allocator>
@@ -41,8 +35,7 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
     using key_compare = std::equal_to<Key>;
 #endif
 
-    // Explicit constructors instead of `using Container::Container`
-    // otherwise older compilers choke on it (GCC <= 5.5, xcode <= 9.4)
+
     ordered_map() noexcept(noexcept(Container())) : Container{} {}
     explicit ordered_map(const Allocator& alloc) noexcept(noexcept(Container(alloc))) : Container{alloc} {}
     template <class It>
@@ -118,7 +111,7 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
 
     template<class KeyType, detail::enable_if_t<
                  detail::is_usable_as_key_type<key_compare, key_type, KeyType>::value, int> = 0>
-    T & at(KeyType && key) // NOLINT(cppcoreguidelines-missing-std-forward)
+    T & at(KeyType && key)
     {
         for (auto it = this->begin(); it != this->end(); ++it)
         {
@@ -146,7 +139,7 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
 
     template<class KeyType, detail::enable_if_t<
                  detail::is_usable_as_key_type<key_compare, key_type, KeyType>::value, int> = 0>
-    const T & at(KeyType && key) const // NOLINT(cppcoreguidelines-missing-std-forward)
+    const T & at(KeyType && key) const
     {
         for (auto it = this->begin(); it != this->end(); ++it)
         {
@@ -165,10 +158,10 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
         {
             if (m_compare(it->first, key))
             {
-                // Since we cannot move const Keys, re-construct them in place
+
                 for (auto next = it; ++next != this->end(); ++it)
                 {
-                    it->~value_type(); // Destroy but keep allocation
+                    it->~value_type();
                     new (&*it) value_type{std::move(*next)};
                 }
                 Container::pop_back();
@@ -180,16 +173,16 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
 
     template<class KeyType, detail::enable_if_t<
                  detail::is_usable_as_key_type<key_compare, key_type, KeyType>::value, int> = 0>
-    size_type erase(KeyType && key) // NOLINT(cppcoreguidelines-missing-std-forward)
+    size_type erase(KeyType && key)
     {
         for (auto it = this->begin(); it != this->end(); ++it)
         {
             if (m_compare(it->first, key))
             {
-                // Since we cannot move const Keys, re-construct them in place
+
                 for (auto next = it; ++next != this->end(); ++it)
                 {
-                    it->~value_type(); // Destroy but keep allocation
+                    it->~value_type();
                     new (&*it) value_type{std::move(*next)};
                 }
                 Container::pop_back();
@@ -214,46 +207,17 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
         const auto elements_affected = std::distance(first, last);
         const auto offset = std::distance(Container::begin(), first);
 
-        // This is the start situation. We need to delete elements_affected
-        // elements (3 in this example: e, f, g), and need to return an
-        // iterator past the last deleted element (h in this example).
-        // Note that offset is the distance from the start of the vector
-        // to first. We will need this later.
-
-        // [ a, b, c, d, e, f, g, h, i, j ]
-        //               ^        ^
-        //             first    last
-
-        // Since we cannot move const Keys, we re-construct them in place.
-        // We start at first and re-construct (viz. copy) the elements from
-        // the back of the vector. Example for first iteration:
-
-        //               ,--------.
-        //               v        |   destroy e and re-construct with h
-        // [ a, b, c, d, e, f, g, h, i, j ]
-        //               ^        ^
-        //               it       it + elements_affected
 
         for (auto it = first; std::next(it, elements_affected) != Container::end(); ++it)
         {
-            it->~value_type(); // destroy but keep allocation
-            new (&*it) value_type{std::move(*std::next(it, elements_affected))}; // "move" next element to it
+            it->~value_type();
+            new (&*it) value_type{std::move(*std::next(it, elements_affected))};
         }
 
-        // [ a, b, c, d, h, i, j, h, i, j ]
-        //               ^        ^
-        //             first    last
 
-        // remove the unneeded elements at the end of the vector
         Container::resize(this->size() - static_cast<size_type>(elements_affected));
 
-        // [ a, b, c, d, h, i, j ]
-        //               ^        ^
-        //             first    last
 
-        // first is now pointing past the last deleted element, but we cannot
-        // use this iterator, because it may have been invalidated by the
-        // resize call. Instead, we can return begin() + offset.
         return Container::begin() + offset;
     }
 
@@ -271,7 +235,7 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
 
     template<class KeyType, detail::enable_if_t<
                  detail::is_usable_as_key_type<key_compare, key_type, KeyType>::value, int> = 0>
-    size_type count(KeyType && key) const // NOLINT(cppcoreguidelines-missing-std-forward)
+    size_type count(KeyType && key) const
     {
         for (auto it = this->begin(); it != this->end(); ++it)
         {
@@ -297,7 +261,7 @@ template <class Key, class T, class IgnoredLess = std::less<Key>,
 
     template<class KeyType, detail::enable_if_t<
                  detail::is_usable_as_key_type<key_compare, key_type, KeyType>::value, int> = 0>
-    iterator find(KeyType && key) // NOLINT(cppcoreguidelines-missing-std-forward)
+    iterator find(KeyType && key)
     {
         for (auto it = this->begin(); it != this->end(); ++it)
         {

@@ -1,17 +1,5 @@
 #pragma once
 
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-FileCopyrightText: 2016-2021 Evan Nemerson <evan@nemerson.com>
-// SPDX-License-Identifier: MIT
-
-/* Hedley - https://nemequ.github.io/hedley
- * Created by Evan Nemerson <evan@nemerson.com>
- */
 
 #if !defined(JSON_HEDLEY_VERSION) || (JSON_HEDLEY_VERSION < 15)
 #if defined(JSON_HEDLEY_VERSION)
@@ -785,8 +773,7 @@
     #define JSON_HEDLEY_DIAGNOSTIC_POP
 #endif
 
-/* JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_ is for
-   HEDLEY INTERNAL USE ONLY.  API subject to change without notice. */
+
 #if defined(JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_)
     #undef JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_
 #endif
@@ -1123,7 +1110,7 @@
 #elif JSON_HEDLEY_HAS_CPP_ATTRIBUTE(nodiscard)
     #define JSON_HEDLEY_WARN_UNUSED_RESULT JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_([[nodiscard]])
     #define JSON_HEDLEY_WARN_UNUSED_RESULT_MSG(msg) JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_([[nodiscard]])
-#elif defined(_Check_return_) /* SAL */
+#elif defined(_Check_return_)
     #define JSON_HEDLEY_WARN_UNUSED_RESULT _Check_return_
     #define JSON_HEDLEY_WARN_UNUSED_RESULT_MSG(msg) _Check_return_
 #else
@@ -1709,7 +1696,7 @@ JSON_HEDLEY_DIAGNOSTIC_POP
     #define JSON_HEDLEY_FALL_THROUGH JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_([[clang::fallthrough]])
 #elif JSON_HEDLEY_HAS_CPP_ATTRIBUTE(fallthrough)
     #define JSON_HEDLEY_FALL_THROUGH JSON_HEDLEY_DIAGNOSTIC_DISABLE_CPP98_COMPAT_WRAP_([[fallthrough]])
-#elif defined(__fallthrough) /* SAL */
+#elif defined(__fallthrough)
     #define JSON_HEDLEY_FALL_THROUGH __fallthrough
 #else
     #define JSON_HEDLEY_FALL_THROUGH
@@ -1723,7 +1710,7 @@ JSON_HEDLEY_DIAGNOSTIC_POP
     JSON_HEDLEY_GCC_VERSION_CHECK(4,9,0) || \
     JSON_HEDLEY_MCST_LCC_VERSION_CHECK(1,25,10)
     #define JSON_HEDLEY_RETURNS_NON_NULL __attribute__((__returns_nonnull__))
-#elif defined(_Ret_notnull_) /* SAL */
+#elif defined(_Ret_notnull_)
     #define JSON_HEDLEY_RETURNS_NON_NULL _Ret_notnull_
 #else
     #define JSON_HEDLEY_RETURNS_NON_NULL
@@ -1749,8 +1736,8 @@ JSON_HEDLEY_DIAGNOSTIC_POP
 #if defined(JSON_HEDLEY_REQUIRE_CONSTEXPR)
     #undef JSON_HEDLEY_REQUIRE_CONSTEXPR
 #endif
-/* JSON_HEDLEY_IS_CONSTEXPR_ is for
-   HEDLEY INTERNAL USE ONLY.  API subject to change without notice. */
+
+
 #if defined(JSON_HEDLEY_IS_CONSTEXPR_)
     #undef JSON_HEDLEY_IS_CONSTEXPR_
 #endif
@@ -1996,7 +1983,6 @@ JSON_HEDLEY_DIAGNOSTIC_POP
     #define JSON_HEDLEY_EMPTY_BASES
 #endif
 
-/* Remaining macros are deprecated. */
 
 #if defined(JSON_HEDLEY_GCC_NOT_CLANG_VERSION_CHECK)
     #undef JSON_HEDLEY_GCC_NOT_CLANG_VERSION_CHECK
@@ -2042,4 +2028,4 @@ JSON_HEDLEY_DIAGNOSTIC_POP
 #endif
 #define JSON_HEDLEY_CLANG_HAS_WARNING(warning) JSON_HEDLEY_HAS_WARNING(warning)
 
-#endif /* !defined(JSON_HEDLEY_VERSION) || (JSON_HEDLEY_VERSION < X) */
+#endif

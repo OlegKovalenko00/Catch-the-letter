@@ -1,11 +1,11 @@
-# Windows test script for Ollama
-# Tests native Ollama and Docker connectivity
-# Usage: .\scripts\windows\test-ollama.ps1
+
+
+
 
 Write-Host "=== Testing Ollama ===" -ForegroundColor Green
 Write-Host ""
 
-# Test native Ollama
+
 Write-Host "1. Native Ollama (Windows localhost):" -ForegroundColor Cyan
 $NativeOllamaUrl = "http://127.0.0.1:11434/api/tags"
 
@@ -45,7 +45,7 @@ Write-Host "3. Ollama chat test (if model available):" -ForegroundColor Cyan
 $chatBody = @{
     model = "qwen3:4b"
     stream = $false
-    messages = @(@{ 
+    messages = @(@{
         role = "user"
         content = 'Return JSON only: {"ok":true}'
     })
@@ -60,7 +60,7 @@ try {
         -Body $chatBody `
         -TimeoutSec 60 `
         -ErrorAction Stop
-    
+
     Write-Host "   [OK] Chat request successful" -ForegroundColor Green
     Write-Host "   Model: $($response.model)" -ForegroundColor Gray
     Write-Host "   Response: $($response.message.content)" -ForegroundColor Gray

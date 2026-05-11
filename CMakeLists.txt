@@ -123,14 +123,23 @@ endif()
 add_executable(catch_the_letter
   src/main.cpp
   src/app/App.cpp
+  src/app/AttachmentService.cpp
   src/app/Config.cpp
+  src/app/EmailClassificationService.cpp
   src/app/EmailClassifier.cpp
+  src/app/EmailDecisionEngine.cpp
+  src/app/EmailIngestionService.cpp
   src/app/FormProviderRouter.cpp
   src/app/FormUnderstandingEngine.cpp
+  src/app/NotificationService.cpp
+  src/app/ProfileExpansionService.cpp
+  src/app/ProfileFactGraph.cpp
   src/app/TelegramDialogManager.cpp
+  src/app/TelegramMailController.cpp
   src/app/UserProfileLoader.cpp
   src/app/WorkflowEngine.cpp
   src/domain/RuleEngine.cpp
+  src/infra/ImapParse.cpp
   src/infra/MailClientMock.cpp
   src/infra/MailClientImap.cpp
   src/infra/BrowserWorkerClient.cpp
@@ -173,4 +182,43 @@ if (USE_FETCHCONTENT)
     nlohmann_json::nlohmann_json
     httplib::httplib
   )
+endif()
+
+
+option(BUILD_TESTS "Build the unit-test executable" OFF)
+
+if (BUILD_TESTS)
+  enable_testing()
+
+  add_executable(ctl_tests
+    tests/test_main.cpp
+    src/app/EmailDecisionEngine.cpp
+    src/app/FormUnderstandingEngine.cpp
+    src/app/ProfileFactGraph.cpp
+    src/infra/ImapParse.cpp
+    src/infra/NoopLlmClient.cpp
+    src/infra/SqliteStorage.cpp
+  )
+
+  target_include_directories(ctl_tests PRIVATE
+    src
+    third_party
+    third_party/nlohmann
+  )
+
+  if (USE_SYSTEM_DEPS)
+    target_include_directories(ctl_tests PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
+  endif()
+
+  if (USE_FETCHCONTENT)
+    target_link_libraries(ctl_tests PRIVATE nlohmann_json::nlohmann_json)
+  endif()
+
+  target_link_libraries(ctl_tests
+    PRIVATE
+      ${CATCH_THE_LETTER_SQLITE_TARGET}
+      Threads::Threads
+  )
+
+  add_test(NAME unit_tests COMMAND ctl_tests)
 endif()

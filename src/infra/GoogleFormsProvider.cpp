@@ -232,7 +232,7 @@ std::string debug_value(const form_session& session, const std::string& key) {
   }
 }
 
-}  // namespace
+}
 
 google_forms_provider::google_forms_provider(google_forms_api_config cfg) : cfg(std::move(cfg)) {}
 

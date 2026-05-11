@@ -66,8 +66,8 @@ bool has_confident_form_link(const message& msg) {
 }
 
 std::string field_title(const form_field& field) {
-  // Use field_label() from FormUnderstandingEngine — strips blank invisible chars
-  // and falls back to api_question_id display for Yandex Forms.
+
+
   std::string lbl = field_label(field);
   if (!lbl.empty()) return lbl;
   if (!field.id.empty()) return field.id;
@@ -109,7 +109,7 @@ form_snapshot provider_snapshot_for_mapping(const provider_inspect_result& inspe
   return snapshot;
 }
 
-}  // namespace
+}
 
 workflow_engine::workflow_engine(app_config cfg,
                                  storage& store,
@@ -167,8 +167,8 @@ void workflow_engine::notify_important(const message& msg, const email_analysis&
 
 std::optional<message_link> workflow_engine::choose_form_link(const message& msg,
                                                               const email_analysis& analysis) const {
-  // Minimum confidence to treat a URL as a fillable form.
-  // URLs like forms.yandex.ru/admin/ (response viewers) score 0.0 and are excluded.
+
+
   constexpr double kMinConfidence = 0.5;
 
   if (!analysis.form_links.empty()) {
@@ -194,6 +194,33 @@ workflow_result workflow_engine::handle_message(const message& msg, const std::v
   workflow_result out;
   auto match = rules_engine.apply(msg, rules);
   if (!match.matched) {
+
+
+    email_analysis unmatched_analysis = classifier.analyze_email(msg);
+    if (unmatched_analysis.kind == message_kind::important_notification ||
+        unmatched_analysis.kind == message_kind::form_request ||
+        unmatched_analysis.kind == message_kind::auth_required) {
+      out.matched = true;
+      {
+        json data = json::object();
+        data["uid"] = msg.uid;
+        data["mailbox_id"] = msg.mailbox_id;
+        data["llm_kind"] = static_cast<int>(unmatched_analysis.kind);
+        append_event("info", "message_matched_by_llm", msg.subject, data);
+      }
+      if (unmatched_analysis.kind == message_kind::form_request) {
+        if (start_form_workflow(msg, unmatched_analysis, out.status)) {
+          store.mark_processed(msg, out.status);
+        } else {
+          store.mark_processed(msg, out.status.empty() ? "manual_required" : out.status);
+        }
+        return out;
+      }
+      notify_important(msg, unmatched_analysis);
+      store.mark_processed(msg, "important_notified");
+      out.status = "important_notified";
+      return out;
+    }
     store.mark_processed(msg, "ignored");
     json data = json::object();
     data["uid"] = msg.uid;
@@ -451,7 +478,7 @@ bool workflow_engine::start_form_workflow(const message& msg,
   if (snapshot->captcha_required) {
     session.status = "captcha_required";
     session.captcha_required = true;
-    // keep browser session alive so user can interact and we can reinspect
+
     std::string id = store.create_form_session(session);
     auto saved = store.get_form_session(id);
     if (saved) {
@@ -535,7 +562,7 @@ bool workflow_engine::send_form_review(const form_session& session, std::string&
   index = 1;
   bool any_unknown = false;
   for (const auto& field : session.fields) {
-    if (field.value.empty() || field.requires_user_input) {
+    if (field.value.empty() && field.values.empty()) {
       any_unknown = true;
       ss << index << ". " << field_title(field) << "\n";
     }
@@ -701,10 +728,31 @@ bool workflow_engine::fill_form_after_review(const std::string& session_id, std:
     err.clear();
     return true;
   }
+
+
   if (session->browser_session_id.empty()) {
-    err = "browser session id is empty";
-    mark_manual_required(session_id, err);
-    return false;
+    std::string reinspect_err;
+    auto snapshot = browser.inspect_form(session->form_url, reinspect_err, false);
+    if (!snapshot.has_value() || snapshot->fields.empty()) {
+      err = "browser session expired and reopen failed: " +
+            (reinspect_err.empty() ? "no fields returned" : reinspect_err);
+      mark_manual_required(session_id, err);
+      return false;
+    }
+
+    session->browser_session_id = snapshot->session_id;
+    std::map<std::string, std::string> new_selectors;
+    for (const auto& f : snapshot->fields) {
+      if (!f.id.empty()) new_selectors[f.id] = f.selector;
+    }
+    for (auto& f : session->fields) {
+      auto it = new_selectors.find(f.id);
+      if (it != new_selectors.end()) f.selector = it->second;
+    }
+    store.update_form_session(*session);
+    append_event("info", "browser_session_reopened",
+                 "Browser session was expired; form reopened for fill",
+                 {{"session_id", session_id}, {"url", session->form_url}});
   }
   auto validation = validate_understood_fields(session->fields);
   if (!validation.can_fill) {

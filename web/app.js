@@ -59,17 +59,17 @@
     }[ch]));
   }
 
-  // Strip invisible Unicode (Hangul Filler U+3164, zero-width spaces, NBSP, etc.)
+
   function stripBlank(text) {
-    // Strip invisible Unicode: Hangul Filler (U+3164), zero-width spaces, NBSP, BOM, etc.
+
     return (text || "").replace(/[ㅤ​‌‍‎‏ ﻿⁠᠎͏]/g, "").trim();
   }
 
-  // Get human-readable display label for a form field, handling Yandex Forms invisible placeholders.
+
   function fieldDisplayLabel(field) {
     const label = stripBlank(field.label) || stripBlank(field.question_block_text) || stripBlank(field.nearby_text);
     if (label) return label;
-    // Yandex Forms: api_question_id = "answer_short_text_1685088" → show "short text #1685088"
+
     if (field.api_question_id) {
       const m = field.api_question_id.match(/^answer_([a-z_]+?)_(\d+)$/);
       if (m) return `${m[1].replace(/_/g, " ")} #${m[2]}`;
@@ -300,7 +300,7 @@
   async function loadProfile() {
     const data = await api("/api/profile").catch(() => ({}));
     const raw = resultPayload(data) || {};
-    // Flatten legacy custom sub-object: {custom:{sex:"male"}} → {sex:"male"}
+
     const profile = { ...raw };
     if (profile.custom && typeof profile.custom === "object" && !Array.isArray(profile.custom)) {
       Object.assign(profile, profile.custom);
@@ -1159,6 +1159,9 @@
       if (state.selectedForm?.form_url) window.open(state.selectedForm.form_url, "_blank", "noopener");
     });
     $("#save-profile-button").addEventListener("click", () => safeRun(saveProfile));
+    $("#expand-profile-button").addEventListener("click", () => safeRun(expandProfilePreview));
+    $("#expansion-apply-button").addEventListener("click", () => safeRun(applyExpansion));
+    $("#expansion-cancel-button").addEventListener("click", () => $("#expansion-modal").close());
     $("#profile-add-button").addEventListener("click", () => addProfileField());
     $("#apply-profile-json-button").addEventListener("click", () => applyProfileJson());
     $("#profile-new-value").addEventListener("keydown", event => { if (event.key === "Enter") addProfileField(); });
@@ -1185,6 +1188,87 @@
     $("#manual-url").addEventListener("input", event => {
       $("#open-manual-url").href = event.target.value || "#";
     });
+  }
+
+  let expansionSuggestions = [];
+
+  async function expandProfilePreview() {
+    showResult("#profile-result", "Анализ профиля, подождите...");
+    let data;
+    try {
+      data = await api("/api/profile/expand-preview", { method: "POST", body: "{}" });
+    } catch (error) {
+      showResult("#profile-result", error.message, "error");
+      return;
+    }
+    const suggestions = data.suggestions || [];
+    if (!suggestions.length) {
+      showResult("#profile-result", "Новых параметров нет: профиль уже содержит все выводимые поля.", "ok");
+      return;
+    }
+    showResult("#profile-result", "");
+    expansionSuggestions = suggestions;
+
+    const infoEl = $("#expansion-info");
+    infoEl.innerHTML =
+      badge(data.llm_used ? "LLM + правила" : "только правила", data.llm_used ? "info" : "neutral") +
+      ` &nbsp; <span>${suggestions.length} предложений</span>`;
+
+    const tableWrap = $("#expansion-table-wrap");
+    tableWrap.innerHTML = `
+      <table class="expansion-table" style="width:100%;border-collapse:collapse;font-size:.88rem">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px;text-align:left">Включить</th>
+            <th style="padding:6px 8px;text-align:left">Ключ</th>
+            <th style="padding:6px 8px;text-align:left">Значение</th>
+            <th style="padding:6px 8px;text-align:left">Источник</th>
+            <th style="padding:6px 8px;text-align:left">Уверенность</th>
+            <th style="padding:6px 8px;text-align:left">Причина</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${suggestions.map((s, i) => `
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 8px"><input type="checkbox" id="expand-cb-${i}" data-expand-key="${escapeHtml(s.key)}" checked></td>
+              <td style="padding:6px 8px"><code>${escapeHtml(s.key)}</code></td>
+              <td style="padding:6px 8px">${escapeHtml(s.value)}</td>
+              <td style="padding:6px 8px">${badge(s.source === "llm" ? "LLM" : "Правило", s.source === "llm" ? "info" : "neutral")}</td>
+              <td style="padding:6px 8px">${badge(Math.round(s.confidence * 100) + "%", toneForConfidence(s.confidence))}</td>
+              <td style="padding:6px 8px;color:var(--muted)">${escapeHtml(s.reason)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+    $("#expansion-modal").showModal();
+  }
+
+  async function applyExpansion() {
+    const modal = $("#expansion-modal");
+    const selectedKeys = $$("[data-expand-key]:checked", modal).map(cb => cb.dataset.expandKey);
+    if (!selectedKeys.length) {
+      showToast("Выберите хотя бы одно поле", "warn");
+      return;
+    }
+    const confirmed = await confirmAction(
+      "Применить расширение профиля?",
+      `Будет добавлено ${selectedKeys.length} полей. Текущий профиль сохранится в лог событий.`
+    );
+    if (!confirmed) return;
+    modal.close();
+    try {
+      const data = await api("/api/profile/apply-expansion", {
+        method: "POST",
+        body: JSON.stringify({ selected_keys: selectedKeys, suggestions: expansionSuggestions })
+      });
+      showResult("#profile-result", data, "ok");
+      showToast(`Добавлено ${selectedKeys.length} полей`);
+      await loadProfile();
+      renderProfile();
+    } catch (error) {
+      showResult("#profile-result", error.message, "error");
+    }
   }
 
   async function explainField(fieldId) {

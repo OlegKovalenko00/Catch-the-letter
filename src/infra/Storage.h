@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../domain/Message.h"
+#include "../domain/EmailAnalysis.h"
 #include "../domain/Form.h"
 
 #include <cstdint>
@@ -43,6 +44,65 @@ struct telegram_dialog {
   std::string updated_at;
 };
 
+struct email_list_filter {
+  std::string status;
+  std::string importance_level;
+  std::string mailbox_id;
+  bool archived = false;
+  bool muted = false;
+};
+
+struct stored_email {
+  std::string id;
+  std::string mailbox_id;
+  std::string uid;
+  std::string message_id;
+  std::string from_addr;
+  std::string to_addr;
+  std::string subject;
+  std::string date_iso;
+  std::string snippet;
+  std::string body_text;
+  std::string links_json;
+  std::string attachments_json;
+  std::string classification_json;
+  std::string importance_level;
+  double importance_score = 0.0;
+  std::string category;
+  std::string status;
+  std::string read_at;
+  std::string archived_at;
+  std::string muted_until;
+  std::string created_at;
+  std::string updated_at;
+};
+
+struct stored_attachment {
+  std::string id;
+  std::string email_id;
+  std::string mailbox_id;
+  std::string uid;
+  std::string part_id;
+  std::string filename;
+  std::string mime_type;
+  std::size_t size_bytes = 0;
+  std::string content_id;
+  std::string disposition;
+  bool safe_to_preview = false;
+  bool downloaded = false;
+  std::string local_path;
+  std::string sha256;
+  std::string created_at;
+};
+
+struct telegram_callback_token_record {
+  std::string token;
+  std::string action;
+  std::string payload_json;
+  std::string expires_at;
+  std::string created_at;
+};
+
 class storage {
 public:
   virtual ~storage() = default;
@@ -65,6 +125,45 @@ public:
   virtual void clear_telegram_dialog(const std::string& chat_id) = 0;
   virtual std::optional<std::string> get_runtime_value(const std::string& key) = 0;
   virtual void set_runtime_value(const std::string& key, const std::string& value) = 0;
+
+
+  virtual std::string save_email_message(const stored_email& email) = 0;
+  virtual void update_email_classification(const std::string& email_id,
+                                           const std::string& classification_json,
+                                           const std::string& importance_level,
+                                           double importance_score,
+                                           const std::string& category,
+                                           const std::string& status) = 0;
+  virtual std::optional<stored_email> get_email_message(const std::string& email_id) = 0;
+  virtual std::optional<stored_email> get_email_by_mailbox_uid(const std::string& mailbox_id,
+                                                                const std::string& uid) = 0;
+  virtual std::vector<stored_email> list_emails(const email_list_filter& filter,
+                                                int limit,
+                                                int offset) = 0;
+  virtual std::vector<stored_email> search_emails(const std::string& query,
+                                                  int limit,
+                                                  int offset) = 0;
+  virtual void mark_email_read(const std::string& email_id) = 0;
+  virtual void archive_email(const std::string& email_id) = 0;
+  virtual void mute_email(const std::string& email_id, const std::string& until_iso) = 0;
+  virtual int count_unread_important() = 0;
+
+
+  virtual void save_email_attachments(const std::string& email_id,
+                                      const std::vector<stored_attachment>& attachments) = 0;
+  virtual std::vector<stored_attachment> get_email_attachments(const std::string& email_id) = 0;
+  virtual std::optional<stored_attachment> get_attachment(const std::string& attachment_id) = 0;
+  virtual void update_attachment_download(const std::string& attachment_id,
+                                          const std::string& local_path,
+                                          const std::string& sha256) = 0;
+
+
+  virtual std::string save_telegram_callback_token(const std::string& action,
+                                                    const std::string& payload_json,
+                                                    int ttl_seconds) = 0;
+  virtual std::optional<telegram_callback_token_record> resolve_telegram_callback_token(
+      const std::string& token) = 0;
+  virtual void cleanup_expired_callback_tokens() = 0;
 
   bool is_processed(const std::string& uid) {
     return is_processed("default", uid);

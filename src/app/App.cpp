@@ -2,6 +2,7 @@
 
 #include "FormProviderRouter.h"
 #include "FormUnderstandingEngine.h"
+#include "ProfileExpansionService.h"
 
 #include "../infra/GoogleFormsProvider.h"
 #include "../infra/YandexFormsProvider.h"
@@ -453,6 +454,20 @@ app::app(app_config cfg,
       *workflow_ptr,
       *this->storage_ptr
   );
+
+  email_ingestion_ptr = std::make_unique<email_ingestion_service>(
+      *this->storage_ptr, this->cfg);
+  email_classification_ptr = std::make_unique<email_classification_service>(
+      *classifier_ptr, *this->storage_ptr, this->cfg.mail_processing);
+  email_decision_ptr = std::make_unique<email_decision_engine>(
+      this->cfg.mail_processing);
+  notification_ptr = std::make_unique<notification_service>(
+      *telegram_bot_ptr, *this->storage_ptr, this->cfg);
+  attachment_svc_ptr = std::make_unique<attachment_service>(
+      *this->storage_ptr, *telegram_bot_ptr, this->cfg);
+  mail_controller_ptr = std::make_unique<telegram_mail_controller>(
+      *telegram_bot_ptr, *this->storage_ptr, this->cfg);
+  dialog_manager_ptr->set_mail_controller(mail_controller_ptr.get());
 }
 
 void app::start_async_services() {
@@ -482,6 +497,38 @@ mailbox_checkpoint app::ensure_checkpoint(mailbox_runtime& mailbox) {
   std::string mailbox_id = mailbox.cfg.mailbox_id.empty() ? "main" : mailbox.cfg.mailbox_id;
   auto existing = storage_ptr->load_checkpoint(mailbox_id);
   if (existing.has_value()) {
+
+    if (mailbox.client) {
+      std::string server_uidvalidity = mailbox.client->fetch_uid_validity();
+      if (!server_uidvalidity.empty()) {
+        if (!existing->uid_validity.empty() && server_uidvalidity != existing->uid_validity) {
+          append_event(
+              "warn",
+              "uidvalidity_changed",
+              "UIDVALIDITY changed — mailbox was rebuilt, resetting checkpoint to start",
+              {{"mailbox_id", mailbox_id},
+               {"stored", existing->uid_validity},
+               {"server", server_uidvalidity}}
+          );
+          mailbox_checkpoint reset;
+          reset.mailbox_id = mailbox_id;
+          reset.uid_validity = server_uidvalidity;
+          reset.last_seen_uid = 0;
+          reset.started_at = now_iso();
+          reset.updated_at = reset.started_at;
+          storage_ptr->save_checkpoint(reset);
+          std::lock_guard<std::mutex> lock(mu);
+          mailbox.last_seen_uid = 0;
+          status.mailbox_id = mailbox_id;
+          status.last_seen_uid = 0;
+          return reset;
+        }
+        if (existing->uid_validity.empty()) {
+          existing->uid_validity = server_uidvalidity;
+          storage_ptr->save_checkpoint(*existing);
+        }
+      }
+    }
     std::lock_guard<std::mutex> lock(mu);
     mailbox.last_seen_uid = existing->last_seen_uid;
     status.mailbox_id = existing->mailbox_id;
@@ -491,7 +538,7 @@ mailbox_checkpoint app::ensure_checkpoint(mailbox_runtime& mailbox) {
 
   mailbox_checkpoint checkpoint;
   checkpoint.mailbox_id = mailbox_id;
-  checkpoint.last_seen_uid = mailbox.client ? mailbox.client->fetch_max_uid() : 0;
+  checkpoint.last_seen_uid = 0;
   checkpoint.started_at = now_iso();
   checkpoint.updated_at = checkpoint.started_at;
   storage_ptr->save_checkpoint(checkpoint);
@@ -600,24 +647,144 @@ void app::run(bool once) {
       mailbox_checkpoint checkpoint = ensure_checkpoint(mailbox);
       int matched = 0;
       std::uint64_t max_seen = checkpoint.last_seen_uid;
-      auto msgs = mailbox.client->fetch_after_uid(checkpoint.last_seen_uid);
-      for (auto msg : msgs) {
+
+      std::uint64_t min_suspect_uid = UINT64_MAX;
+
+      std::cout << "[mail] poll mailbox=" << checkpoint.mailbox_id
+                << " last_seen_uid=" << checkpoint.last_seen_uid << std::endl;
+
+      auto fetch_result = mailbox.client->fetch_after_uid_result(checkpoint.last_seen_uid);
+
+      std::cout << "[mail] fetched mailbox=" << checkpoint.mailbox_id
+                << " searched=" << fetch_result.searched_uids.size()
+                << " messages=" << fetch_result.messages.size()
+                << " failed=" << fetch_result.failed_uids.size()
+                << " parse_failed=" << fetch_result.parse_failed_uids.size() << std::endl;
+
+
+      for (const auto& fuid : fetch_result.failed_uids) {
+        std::uint64_t n = parse_uid_or_zero(fuid);
+        if (n > 0 && n < min_suspect_uid) min_suspect_uid = n;
+        append_event("warn", "imap_fetch_failed",
+            "IMAP FETCH returned a network error — checkpoint not advanced",
+            {{"uid", fuid}, {"mailbox_id", checkpoint.mailbox_id}});
+      }
+
+
+      for (const auto& pfuid : fetch_result.parse_failed_uids) {
+        std::uint64_t n = parse_uid_or_zero(pfuid);
+        if (n > 0 && n < min_suspect_uid) min_suspect_uid = n;
+        append_event("warn", "imap_message_parse_suspect",
+            "IMAP message had empty subject/from/body — checkpoint not advanced",
+            {{"uid", pfuid}, {"mailbox_id", checkpoint.mailbox_id}});
+      }
+
+
+      for (auto msg : fetch_result.messages) {
         if (msg.mailbox_id.empty() || msg.mailbox_id == "default") {
           msg.mailbox_id = checkpoint.mailbox_id;
         }
         if (msg.provider.empty()) msg.provider = mailbox.cfg.provider;
 
         std::uint64_t numeric_uid = parse_uid_or_zero(msg.uid);
-        if (numeric_uid > max_seen) max_seen = numeric_uid;
 
-        if (storage_ptr->is_processed(msg.mailbox_id, msg.uid)) continue;
+        if (storage_ptr->is_processed(msg.mailbox_id, msg.uid)) {
+          std::cout << "[mail] skip uid=" << msg.uid << " already_processed" << std::endl;
+          if (numeric_uid > max_seen) max_seen = numeric_uid;
+          continue;
+        }
 
-        auto result = workflow_ptr->handle_message(msg, rules_copy);
-        if (result.matched) matched++;
+        std::cout << "[mail] process uid=" << msg.uid
+                  << " from=" << msg.from
+                  << " subject=" << msg.subject << std::endl;
+
+        append_event("info", "mail_fetched", "Email fetched from IMAP",
+            {{"uid", msg.uid}, {"mailbox_id", msg.mailbox_id},
+             {"subject", msg.subject}, {"from", msg.from},
+             {"links", static_cast<int>(msg.links.size())},
+             {"attachments", static_cast<int>(msg.attachments.size())}});
+
+
+        std::string email_id;
+        email_analysis analysis;
+        email_decision decision;
+        bool pipeline_ok = false;
+
+        if (email_ingestion_ptr) {
+          email_id = email_ingestion_ptr->ingest(msg);
+          append_event("info", "mail_stored", "Email stored in database",
+              {{"uid", msg.uid}, {"email_id", email_id}});
+        }
+
+        if (!email_id.empty()) {
+          if (attachment_svc_ptr) attachment_svc_ptr->store_attachments(email_id, msg);
+          if (email_classification_ptr) {
+            append_event("info", "mail_classification_started", "Email classification started",
+                {{"uid", msg.uid}, {"email_id", email_id}});
+            analysis = email_classification_ptr->classify(email_id, msg);
+            append_event("info", "mail_classification_finished", "Email classification finished",
+                {{"uid", msg.uid}, {"kind", to_string(analysis.kind)},
+                 {"level", to_string(analysis.level)},
+                 {"confidence", analysis.confidence},
+                 {"should_notify", analysis.should_notify}});
+          }
+          if (email_decision_ptr) {
+            decision = email_decision_ptr->decide(analysis, msg);
+            std::string action_str =
+                decision.action == email_action::notify    ? "notify"    :
+                decision.action == email_action::form_fill ? "form_fill" : "ignore";
+            append_event("info", "mail_decision_created", "Email decision made",
+                {{"uid", msg.uid}, {"action", action_str}, {"reason", decision.reason}});
+          }
+          pipeline_ok = true;
+        }
+
+        if (pipeline_ok) {
+          if (decision.action == email_action::form_fill) {
+
+            auto wf_result = workflow_ptr->handle_message(msg, rules_copy);
+            std::cout << "[mail] form_fill uid=" << msg.uid
+                      << " matched=" << wf_result.matched << std::endl;
+            if (wf_result.matched) matched++;
+          } else if (decision.action == email_action::notify) {
+            if (notification_ptr) {
+              auto stored = storage_ptr->get_email_message(email_id);
+              if (stored) {
+                notification_ptr->notify_email(*stored, analysis);
+                append_event("info", "mail_important_notified", "Telegram notification sent",
+                    {{"uid", msg.uid}, {"email_id", email_id},
+                     {"importance_level", stored->importance_level}});
+              }
+            }
+            storage_ptr->mark_processed(msg, "important_notified");
+            matched++;
+          } else {
+            storage_ptr->mark_processed(msg, "ignored");
+            append_event("info", "mail_ignored", "Email classified as ignored",
+                {{"uid", msg.uid}, {"reason", decision.reason}});
+          }
+          if (cfg.mail_processing.mark_seen_after_success && mailbox.client) {
+            mailbox.client->mark_message_seen(msg.uid);
+          }
+
+          if (numeric_uid > max_seen) max_seen = numeric_uid;
+        } else {
+
+          auto wf_result = workflow_ptr->handle_message(msg, rules_copy);
+          std::cout << "[mail] legacy result uid=" << msg.uid
+                    << " matched=" << wf_result.matched << std::endl;
+          if (wf_result.matched) matched++;
+          if (numeric_uid > max_seen) max_seen = numeric_uid;
+        }
       }
 
-      if (max_seen > checkpoint.last_seen_uid) {
-        checkpoint.last_seen_uid = max_seen;
+
+      std::uint64_t safe_max = (min_suspect_uid != UINT64_MAX && min_suspect_uid > 0)
+          ? std::min(max_seen, min_suspect_uid - 1)
+          : max_seen;
+
+      if (safe_max > checkpoint.last_seen_uid) {
+        checkpoint.last_seen_uid = safe_max;
         checkpoint.updated_at = now_iso();
         storage_ptr->save_checkpoint(checkpoint);
         append_event(
@@ -1417,7 +1584,7 @@ std::string app::create_form_session_from_url_json(const std::string& body) {
       };
       return api_error(inspected.error.empty() ? "provider setup required" : inspected.error, details).dump(2);
     }
-    // Provider check failed but browser fallback is allowed — continue to browser inspection below.
+
     append_event("info", "provider_failed_browser_fallback", "Provider check failed, trying browser fallback",
                  {{"provider", session.provider_type}, {"url", sanitize_url_for_log(url)}, {"error", inspected.error}});
   }
@@ -1669,4 +1836,371 @@ bool app::captcha_click_form(const std::string& id, const std::string& body, std
 
 bool app::captcha_reinspect_form(const std::string& id, std::string& err) {
   return workflow_ptr->reinspect_after_captcha(id, err);
+}
+
+std::string app::mail_debug_json() const {
+  nlohmann::json out;
+  out["timestamp"] = now_iso();
+  out["mailboxes"] = nlohmann::json::array();
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    for (const auto& mailbox : mailboxes) {
+      std::string masked_user = mailbox.cfg.username;
+      if (masked_user.size() > 2) masked_user = masked_user.substr(0, 2) + "***";
+      out["mailboxes"].push_back({
+          {"id", mailbox.cfg.mailbox_id},
+          {"provider", mailbox.cfg.provider},
+          {"host", mailbox.cfg.host},
+          {"port", mailbox.cfg.port},
+          {"tls", mailbox.cfg.tls},
+          {"folder", mailbox.cfg.folder},
+          {"username", masked_user},
+          {"enabled", mailbox.client != nullptr},
+          {"last_error", mailbox.last_error},
+          {"last_seen_uid", mailbox.last_seen_uid},
+          {"last_check", mailbox.last_check},
+          {"matched_last", mailbox.matched_last}
+      });
+    }
+  }
+  out["processed_total"] = storage_ptr ? storage_ptr->processed_count() : 0;
+  return out.dump(2);
+}
+
+std::string app::mail_scan_last_json(int n) {
+  if (n <= 0 || n > 100) n = 10;
+  nlohmann::json out;
+  out["n"] = n;
+  out["mailboxes"] = nlohmann::json::array();
+  for (auto& mailbox : mailboxes) {
+    nlohmann::json box;
+    box["id"] = mailbox.cfg.mailbox_id;
+    if (!mailbox.client) {
+      box["error"] = mailbox.last_error.empty() ? "no mail client" : mailbox.last_error;
+      out["mailboxes"].push_back(box);
+      continue;
+    }
+    auto msgs = mailbox.client->fetch_last_n(n);
+    box["fetched"] = msgs.size();
+    box["messages"] = nlohmann::json::array();
+    for (const auto& msg : msgs) {
+      bool processed = storage_ptr && storage_ptr->is_processed(
+          msg.mailbox_id.empty() ? mailbox.cfg.mailbox_id : msg.mailbox_id, msg.uid);
+      box["messages"].push_back({
+          {"uid", msg.uid},
+          {"from", msg.from},
+          {"subject", msg.subject},
+          {"date", msg.date_iso},
+          {"snippet", msg.snippet},
+          {"links", static_cast<int>(msg.links.size())},
+          {"already_processed", processed}
+      });
+    }
+    out["mailboxes"].push_back(box);
+  }
+  return out.dump(2);
+}
+
+std::string app::mail_reset_state_json(const std::string& mailbox_id_param) {
+  if (!storage_ptr) return api_error("storage not available").dump(2);
+  std::string target_id = mailbox_id_param.empty() ? "main" : mailbox_id_param;
+
+  mailbox_checkpoint reset;
+  reset.mailbox_id = target_id;
+  reset.last_seen_uid = 0;
+  reset.started_at = now_iso();
+  reset.updated_at = reset.started_at;
+  storage_ptr->save_checkpoint(reset);
+
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    for (auto& mailbox : mailboxes) {
+      const std::string& id = mailbox.cfg.mailbox_id.empty() ? "main" : mailbox.cfg.mailbox_id;
+      if (id == target_id) {
+        mailbox.last_seen_uid = 0;
+      }
+    }
+    if (status.mailbox_id == target_id || status.mailbox_id.empty()) {
+      status.last_seen_uid = 0;
+    }
+  }
+
+  append_event("info", "mail_state_reset", "Mail checkpoint reset to 0",
+               {{"mailbox_id", target_id}});
+  return nlohmann::json({
+      {"ok", true},
+      {"message", "checkpoint reset for mailbox " + target_id + "; next poll will re-scan from uid=1"},
+      {"mailbox_id", target_id},
+      {"last_seen_uid", 0}
+  }).dump(2);
+}
+
+std::string app::expand_profile_preview_json(const std::string& body) {
+  bool use_llm = true;
+  try {
+    if (!body.empty()) {
+      auto parsed = nlohmann::json::parse(body);
+      use_llm = parsed.value("use_llm", true);
+    }
+  } catch (...) {}
+
+  bool llm_available = cfg.llm.enabled && !cfg.llm.endpoint.empty();
+  auto suggestions = suggest_profile_expansions(profile, cfg.llm, use_llm && llm_available);
+
+  nlohmann::json out;
+  out["ok"] = true;
+  out["llm_used"] = use_llm && llm_available;
+  out["llm_available"] = llm_available;
+  out["suggestions"] = nlohmann::json::array();
+  for (const auto& s : suggestions) {
+    out["suggestions"].push_back({
+      {"key", s.key},
+      {"value", s.value},
+      {"source", s.source},
+      {"reason", s.reason},
+      {"confidence", s.confidence}
+    });
+  }
+  append_event("info", "profile_expansion_preview_requested",
+    "Profile expansion preview: " + std::to_string(suggestions.size()) + " suggestions",
+    {{"count", (int)suggestions.size()}, {"llm_used", use_llm && llm_available}});
+  return out.dump(2);
+}
+
+
+static nlohmann::json stored_email_summary_to_json(const stored_email& e) {
+  int att_count = 0;
+  if (!e.attachments_json.empty() && e.attachments_json != "[]") {
+    for (char c : e.attachments_json) if (c == '{') att_count++;
+  }
+  return {
+    {"id", e.id},
+    {"mailbox_id", e.mailbox_id},
+    {"uid", e.uid},
+    {"from", e.from_addr},
+    {"subject", e.subject},
+    {"date", e.date_iso},
+    {"snippet", e.snippet},
+    {"importance_level", e.importance_level},
+    {"importance_score", e.importance_score},
+    {"category", e.category},
+    {"status", e.status},
+    {"read_at", e.read_at},
+    {"archived_at", e.archived_at},
+    {"muted_until", e.muted_until},
+    {"attachment_count", att_count},
+    {"created_at", e.created_at},
+    {"updated_at", e.updated_at}
+  };
+}
+
+static nlohmann::json stored_email_detail_to_json(const stored_email& e) {
+  nlohmann::json j = stored_email_summary_to_json(e);
+  j["to"] = e.to_addr;
+  j["message_id"] = e.message_id;
+  j["body_text"] = e.body_text;
+  nlohmann::json cls = nlohmann::json::object();
+  if (!e.classification_json.empty()) {
+    try { cls = nlohmann::json::parse(e.classification_json); } catch (...) {}
+  }
+  j["classification"] = cls;
+  return j;
+}
+
+std::string app::mail_list_json(const std::string& filter, int limit, int offset) const {
+  if (!storage_ptr) return api_error("storage not available").dump(2);
+  email_list_filter f;
+  f.status = filter.empty() ? "all" : filter;
+  if (limit <= 0 || limit > 100) limit = 20;
+  if (offset < 0) offset = 0;
+  auto emails = storage_ptr->list_emails(f, limit, offset);
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& e : emails) arr.push_back(stored_email_summary_to_json(e));
+  return nlohmann::json({{"ok", true}, {"filter", filter}, {"count", (int)arr.size()}, {"emails", arr}}).dump(2);
+}
+
+std::string app::mail_get_json(const std::string& id) const {
+  if (!storage_ptr) return api_error("storage not available").dump(2);
+  auto email = storage_ptr->get_email_message(id);
+  if (!email) return api_error("email not found", {{"id", id}}).dump(2);
+  nlohmann::json out;
+  out["ok"] = true;
+  out["email"] = stored_email_detail_to_json(*email);
+  return out.dump(2);
+}
+
+bool app::mail_mark_read(const std::string& id, std::string& err) {
+  if (!storage_ptr) { err = "storage not available"; return false; }
+  auto email = storage_ptr->get_email_message(id);
+  if (!email) { err = "email not found"; return false; }
+  storage_ptr->mark_email_read(id);
+  append_event("info", "mail_read", "Email marked as read", {{"email_id", id}});
+  return true;
+}
+
+bool app::mail_archive(const std::string& id, std::string& err) {
+  if (!storage_ptr) { err = "storage not available"; return false; }
+  auto email = storage_ptr->get_email_message(id);
+  if (!email) { err = "email not found"; return false; }
+  storage_ptr->archive_email(id);
+  append_event("info", "mail_archived", "Email archived", {{"email_id", id}});
+  return true;
+}
+
+bool app::mail_mute(const std::string& id, const std::string& body, std::string& err) {
+  if (!storage_ptr) { err = "storage not available"; return false; }
+  auto email = storage_ptr->get_email_message(id);
+  if (!email) { err = "email not found"; return false; }
+
+  nlohmann::json parsed = nlohmann::json::object();
+  if (!body.empty()) {
+    try { parsed = nlohmann::json::parse(body); } catch (...) {}
+  }
+
+  std::string until_iso;
+  if (parsed.contains("until") && parsed["until"].is_string()) {
+    until_iso = parsed["until"].get<std::string>();
+  } else {
+    int mute_hours = parsed.value("hours", 24);
+    if (mute_hours <= 0 || mute_hours > 24 * 365) mute_hours = 24;
+    auto t = system_clock::to_time_t(system_clock::now() + hours(mute_hours));
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[32]{};
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    until_iso = buf;
+  }
+
+  storage_ptr->mute_email(id, until_iso);
+  append_event("info", "mail_muted", "Email muted", {{"email_id", id}, {"until", until_iso}});
+  return true;
+}
+
+std::string app::mail_attachments_json(const std::string& email_id) const {
+  if (!storage_ptr) return api_error("storage not available").dump(2);
+  auto email = storage_ptr->get_email_message(email_id);
+  if (!email) return api_error("email not found", {{"id", email_id}}).dump(2);
+  auto attachments = storage_ptr->get_email_attachments(email_id);
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& a : attachments) {
+    arr.push_back({
+      {"id", a.id},
+      {"email_id", a.email_id},
+      {"filename", a.filename},
+      {"mime_type", a.mime_type},
+      {"size_bytes", a.size_bytes},
+      {"disposition", a.disposition},
+      {"safe_to_preview", a.safe_to_preview},
+      {"downloaded", a.downloaded},
+      {"sha256", a.sha256},
+      {"created_at", a.created_at}
+    });
+  }
+  return nlohmann::json({{"ok", true}, {"email_id", email_id}, {"count", (int)arr.size()}, {"attachments", arr}}).dump(2);
+}
+
+bool app::mail_attachment_download(const std::string& attachment_id,
+                                    std::string& content,
+                                    std::string& content_type,
+                                    std::string& filename,
+                                    std::string& err) const {
+  if (!storage_ptr) { err = "storage not available"; return false; }
+  auto att = storage_ptr->get_attachment(attachment_id);
+  if (!att) { err = "attachment not found"; return false; }
+  if (!att->downloaded || att->local_path.empty()) {
+    err = "attachment not yet downloaded from IMAP";
+    return false;
+  }
+  if (!att->safe_to_preview) {
+    err = "attachment is not marked safe for download";
+    return false;
+  }
+  std::ifstream f(att->local_path, std::ios::binary);
+  if (!f) { err = "attachment file not found on disk"; return false; }
+  content.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  content_type = att->mime_type.empty() ? "application/octet-stream" : att->mime_type;
+  filename = att->filename;
+  return true;
+}
+
+std::string app::mail_search_json(const std::string& query, int limit, int offset) const {
+  if (!storage_ptr) return api_error("storage not available").dump(2);
+  if (query.empty()) return api_error("q parameter is required").dump(2);
+  if (limit <= 0 || limit > 100) limit = 20;
+  if (offset < 0) offset = 0;
+  auto emails = storage_ptr->search_emails(query, limit, offset);
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& e : emails) arr.push_back(stored_email_summary_to_json(e));
+  return nlohmann::json({{"ok", true}, {"query", query}, {"count", (int)arr.size()}, {"emails", arr}}).dump(2);
+}
+
+bool app::apply_profile_expansion_json(const std::string& body, std::string& err) {
+  nlohmann::json parsed;
+  if (!json_util::parse(body, parsed, &err)) return false;
+
+  if (!parsed.contains("selected_keys") || !parsed["selected_keys"].is_array()) {
+    err = "selected_keys array is required";
+    return false;
+  }
+  if (!parsed.contains("suggestions") || !parsed["suggestions"].is_array()) {
+    err = "suggestions array is required";
+    return false;
+  }
+
+  std::map<std::string, std::string> key_to_value;
+  for (const auto& item : parsed["suggestions"]) {
+    if (!item.is_object()) continue;
+    std::string k = item.value("key", "");
+    std::string v = item.value("value", "");
+    if (!k.empty() && !v.empty()) key_to_value[k] = v;
+  }
+
+  std::vector<std::pair<std::string, std::string>> to_apply;
+  for (const auto& key_item : parsed["selected_keys"]) {
+    if (!key_item.is_string()) continue;
+    std::string k = key_item.get<std::string>();
+    if (!is_expansion_key_allowed(k)) {
+      err = "key not in allowlist: " + k;
+      return false;
+    }
+    auto it = key_to_value.find(k);
+    if (it == key_to_value.end()) {
+      err = "key not found in suggestions: " + k;
+      return false;
+    }
+    to_apply.push_back({k, it->second});
+  }
+
+  if (to_apply.empty()) {
+    err = "no keys selected";
+    return false;
+  }
+
+  nlohmann::json backup_json;
+  for (const auto& [k, v] : profile.values) backup_json[k] = v;
+
+  nlohmann::json applied_json = nlohmann::json::array();
+  for (const auto& [k, v] : to_apply) {
+    profile.values[k] = v;
+    applied_json.push_back({{"key", k}, {"value", v}});
+  }
+
+  std::ofstream f(cfg.profile_file, std::ios::binary);
+  if (!f) {
+    err = "cannot write profile file";
+    return false;
+  }
+  f << user_profile_to_json(profile);
+  f.close();
+
+  if (workflow_ptr) workflow_ptr->set_profile(profile);
+
+  append_event("info", "profile_expansion_applied",
+    "Profile expansion applied: " + std::to_string(to_apply.size()) + " fields added",
+    {{"applied", applied_json}, {"backup_key_count", static_cast<int>(backup_json.size())}});
+  return true;
 }

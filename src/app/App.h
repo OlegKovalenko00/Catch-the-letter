@@ -1,8 +1,14 @@
 #pragma once
 
+#include "AttachmentService.h"
 #include "Config.h"
+#include "EmailClassificationService.h"
 #include "EmailClassifier.h"
+#include "EmailDecisionEngine.h"
+#include "EmailIngestionService.h"
+#include "NotificationService.h"
 #include "TelegramDialogManager.h"
+#include "TelegramMailController.h"
 #include "WorkflowEngine.h"
 #include "UserProfileLoader.h"
 
@@ -87,6 +93,26 @@ public:
   bool captcha_click_form(const std::string& id, const std::string& body, std::string& err);
   bool captcha_reinspect_form(const std::string& id, std::string& err);
 
+  std::string mail_debug_json() const;
+  std::string mail_scan_last_json(int n);
+  std::string mail_reset_state_json(const std::string& mailbox_id = {});
+
+  std::string mail_list_json(const std::string& filter, int limit, int offset) const;
+  std::string mail_get_json(const std::string& id) const;
+  bool mail_mark_read(const std::string& id, std::string& err);
+  bool mail_archive(const std::string& id, std::string& err);
+  bool mail_mute(const std::string& id, const std::string& body, std::string& err);
+  std::string mail_attachments_json(const std::string& email_id) const;
+  bool mail_attachment_download(const std::string& attachment_id,
+                                std::string& content,
+                                std::string& content_type,
+                                std::string& filename,
+                                std::string& err) const;
+  std::string mail_search_json(const std::string& query, int limit, int offset) const;
+
+  std::string expand_profile_preview_json(const std::string& body);
+  bool apply_profile_expansion_json(const std::string& body, std::string& err);
+
 private:
   mailbox_checkpoint ensure_checkpoint(mailbox_runtime& mailbox);
   void load_rules_if_changed();
@@ -109,6 +135,12 @@ private:
   std::unique_ptr<email_classifier> classifier_ptr;
   std::unique_ptr<workflow_engine> workflow_ptr;
   std::unique_ptr<telegram_dialog_manager> dialog_manager_ptr;
+  std::unique_ptr<email_ingestion_service> email_ingestion_ptr;
+  std::unique_ptr<email_classification_service> email_classification_ptr;
+  std::unique_ptr<email_decision_engine> email_decision_ptr;
+  std::unique_ptr<notification_service> notification_ptr;
+  std::unique_ptr<attachment_service> attachment_svc_ptr;
+  std::unique_ptr<telegram_mail_controller> mail_controller_ptr;
 
   mutable std::mutex mu;
   std::vector<rule> rules;

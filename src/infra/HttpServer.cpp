@@ -79,7 +79,7 @@ void set_json_result(httplib::Response& res, bool ok, const std::string& err, in
   res.set_content(body.dump(), "application/json; charset=utf-8");
 }
 
-}  // namespace
+}
 
 class http_server_impl final : public http_server {
 public:
@@ -321,7 +321,139 @@ public:
       post_form_action(req, res, handlers.captcha_reinspect_form);
     });
 
-    // Serve the SPA for /forms/* paths (for captcha page deep links)
+    server.Get("/api/debug/mail/status", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string body = handlers.mail_debug_json ? handlers.mail_debug_json() : "{}";
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+    server.Post("/api/debug/mail/scan-last", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      int n = 10;
+      try {
+        auto parsed = nlohmann::json::parse(req.body.empty() ? "{}" : req.body);
+        n = parsed.value("n", 10);
+      } catch (...) {}
+      std::string body = handlers.mail_scan_last_json ? handlers.mail_scan_last_json(n) : "{}";
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+    server.Post("/api/debug/mail/reset-state", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string mailbox_id;
+      try {
+        auto parsed = nlohmann::json::parse(req.body.empty() ? "{}" : req.body);
+        mailbox_id = parsed.value("mailbox_id", "");
+      } catch (...) {}
+      std::string body = handlers.mail_reset_state_json ?
+          handlers.mail_reset_state_json(mailbox_id) :
+          nlohmann::json({{"ok", false}, {"error", "handler unavailable"}}).dump();
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+
+    server.Post("/api/profile/expand-preview", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string body = handlers.expand_profile_preview_json ?
+          handlers.expand_profile_preview_json(req.body) :
+          nlohmann::json({{"ok", false}, {"error", "handler unavailable"}, {"suggestions", nlohmann::json::array()}}).dump();
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+    server.Post("/api/profile/apply-expansion", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string err;
+      bool ok = handlers.apply_profile_expansion_json ?
+          handlers.apply_profile_expansion_json(req.body, err) : false;
+      set_json_result(res, ok, err.empty() ? "apply failed" : err);
+    });
+
+
+    server.Get("/api/mail", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string filter = req.has_param("filter") ? req.get_param_value("filter") : "all";
+      int limit = 20, offset = 0;
+      try { if (req.has_param("limit"))  limit  = std::stoi(req.get_param_value("limit"));  } catch (...) {}
+      try { if (req.has_param("offset")) offset = std::stoi(req.get_param_value("offset")); } catch (...) {}
+      std::string body = handlers.mail_list_json ?
+          handlers.mail_list_json(filter, limit, offset) :
+          nlohmann::json({{"ok", false}, {"error", "handler unavailable"}, {"emails", nlohmann::json::array()}}).dump();
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+
+
+    server.Get("/api/mail/search", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string q = req.has_param("q") ? req.get_param_value("q") : "";
+      int limit = 20, offset = 0;
+      try { if (req.has_param("limit"))  limit  = std::stoi(req.get_param_value("limit"));  } catch (...) {}
+      try { if (req.has_param("offset")) offset = std::stoi(req.get_param_value("offset")); } catch (...) {}
+      std::string body = handlers.mail_search_json ?
+          handlers.mail_search_json(q, limit, offset) :
+          nlohmann::json({{"ok", false}, {"error", "handler unavailable"}, {"emails", nlohmann::json::array()}}).dump();
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+
+
+    server.Get(R"(/api/mail/attachments/([^/]+)/download)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string content, content_type, filename, err;
+      bool ok = handlers.mail_attachment_download &&
+                handlers.mail_attachment_download(req.matches[1], content, content_type, filename, err);
+      if (!ok) {
+        res.status = err.find("not found") != std::string::npos ? 404 : 400;
+        res.set_content(
+            nlohmann::json({{"ok", false}, {"error", err.empty() ? "attachment unavailable" : err}}).dump(),
+            "application/json; charset=utf-8");
+        return;
+      }
+      if (!filename.empty()) {
+        std::string safe = filename;
+        for (char& c : safe) if (c == '"' || c == '\r' || c == '\n') c = '_';
+        res.set_header("Content-Disposition", "attachment; filename=\"" + safe + "\"");
+      }
+      res.set_content(content, content_type.empty() ? "application/octet-stream" : content_type);
+    });
+
+
+    server.Get(R"(/api/mail/([^/]+)/attachments)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string body = handlers.mail_attachments_json ?
+          handlers.mail_attachments_json(req.matches[1]) :
+          nlohmann::json({{"ok", false}, {"error", "handler unavailable"}}).dump();
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+
+
+    server.Post(R"(/api/mail/([^/]+)/read)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string err;
+      bool ok = handlers.mail_mark_read && handlers.mail_mark_read(req.matches[1], err);
+      set_json_result(res, ok, err.empty() ? "read failed" : err);
+    });
+
+
+    server.Post(R"(/api/mail/([^/]+)/archive)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string err;
+      bool ok = handlers.mail_archive && handlers.mail_archive(req.matches[1], err);
+      set_json_result(res, ok, err.empty() ? "archive failed" : err);
+    });
+
+
+    server.Post(R"(/api/mail/([^/]+)/mute)", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string err;
+      bool ok = handlers.mail_mute && handlers.mail_mute(req.matches[1], req.body, err);
+      set_json_result(res, ok, err.empty() ? "mute failed" : err);
+    });
+
+
+    server.Get(R"(/api/mail/([^/]+))", [this](const httplib::Request& req, httplib::Response& res) {
+      if (!auth_ok(req, res)) return;
+      std::string body = handlers.mail_get_json ?
+          handlers.mail_get_json(req.matches[1]) :
+          nlohmann::json({{"ok", false}, {"error", "handler unavailable"}}).dump();
+      res.set_content(body, "application/json; charset=utf-8");
+    });
+
+
     server.Get(R"(/forms/.*)", [](const httplib::Request&, httplib::Response& res) {
       set_static_content(res,
                          {"/app/web/index.html", "./web/index.html"},
@@ -356,7 +488,6 @@ private:
       const std::string prefix = "Bearer ";
       if (auth.rfind(prefix, 0) == 0) token = auth.substr(prefix.size());
     }
-    if (token.empty() && req.has_param("token")) token = req.get_param_value("token");
     if (token == cfg.auth_token) return true;
     res.status = 401;
     res.set_content("{\"ok\":false,\"error\":\"unauthorized\",\"details\":{}}", "application/json; charset=utf-8");

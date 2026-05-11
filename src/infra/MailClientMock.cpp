@@ -6,7 +6,7 @@
 class mail_client_mock : public mail_client {
 public:
   std::uint64_t fetch_max_uid() override {
-    return 0;
+    return 2;
   }
 
   std::vector<message> fetch_after_uid(std::uint64_t last_seen_uid) override {
@@ -42,6 +42,14 @@ public:
     if (last_seen_uid < 2) res.push_back(b);
 
     return res;
+  }
+
+  std::vector<message> fetch_last_n(int n) override {
+    auto all = fetch_after_uid(0);
+    if (n > 0 && static_cast<int>(all.size()) > n) {
+      all.erase(all.begin(), all.end() - n);
+    }
+    return all;
   }
 };
 

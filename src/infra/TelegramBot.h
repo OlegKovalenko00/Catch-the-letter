@@ -11,7 +11,7 @@
 struct telegram_button {
   std::string text;
   std::string callback_data;
-  std::string url;  // for URL buttons (mutually exclusive with callback_data)
+  std::string url;
 };
 
 struct telegram_update {
@@ -36,6 +36,14 @@ public:
   bool answer_callback_query(const std::string& callback_query_id,
                              const std::string& text,
                              std::string& err) const;
+  bool send_document(const std::string& file_path,
+                     const std::string& caption,
+                     std::string& err) const;
+  bool edit_message_text(const std::string& chat_id,
+                         long long message_id,
+                         const std::string& text,
+                         const std::vector<std::vector<telegram_button>>& inline_keyboard,
+                         std::string& err) const;
 
 private:
   bool request(const std::string& method,

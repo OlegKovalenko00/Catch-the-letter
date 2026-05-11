@@ -21,7 +21,7 @@ std::string url_encode(CURL* curl, const std::string& s) {
   return out;
 }
 
-}  // namespace
+}
 
 class telegram_notifier_http final : public telegram_notifier {
 public:

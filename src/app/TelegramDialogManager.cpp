@@ -14,6 +14,16 @@ telegram_dialog_manager::telegram_dialog_manager(telegram_config cfg,
                                                  storage& store)
   : cfg(std::move(cfg)), bot(bot), workflow(workflow), store(store) {}
 
+void telegram_dialog_manager::log_event(const std::string& level, const std::string& type,
+                                         const std::string& message, nlohmann::json data) {
+  event_record rec;
+  rec.level    = level;
+  rec.type     = type;
+  rec.message  = message;
+  rec.data_json = data.dump();
+  store.append_event(rec, 200);
+}
+
 telegram_dialog_manager::~telegram_dialog_manager() {
   stop();
 }
@@ -54,6 +64,17 @@ void telegram_dialog_manager::loop() {
 }
 
 void telegram_dialog_manager::handle_update(const telegram_update& update) {
+
+  if (!cfg.chat_id.empty() && update.chat_id != cfg.chat_id) {
+    log_event("warn", "telegram_unauthorized_chat",
+              "Rejected update from unauthorized chat_id",
+              {{"chat_id", update.chat_id},
+               {"update_id", update.update_id},
+               {"has_text", !update.text.empty()},
+               {"has_callback", !update.callback_data.empty()}});
+    return;
+  }
+
   if (!update.callback_data.empty()) {
     handle_callback(update);
     return;
@@ -62,6 +83,13 @@ void telegram_dialog_manager::handle_update(const telegram_update& update) {
 }
 
 void telegram_dialog_manager::handle_callback(const telegram_update& update) {
+  if (mail_controller &&
+      (update.callback_data.rfind("mtok:", 0) == 0 ||
+       update.callback_data.rfind("mail:", 0) == 0)) {
+    if (mail_controller->handle_callback(update.chat_id, update.callback_query_id, update.callback_data))
+      return;
+  }
+
   std::string callback_err;
   auto answer = [&](const std::string& text) {
     bot.answer_callback_query(update.callback_query_id, text, callback_err);
@@ -201,7 +229,7 @@ std::string option_value(const field_option& option) {
   return option.id;
 }
 
-}  // namespace
+}
 
 bool telegram_dialog_manager::send_next_answer_prompt(const std::string& chat_id,
                                                       const std::string& session_id,
@@ -319,10 +347,20 @@ void telegram_dialog_manager::handle_text(const telegram_update& update) {
     return s;
   };
   const std::string text = trim(update.text);
+
+  if (mail_controller && mail_controller->handle_command(update.chat_id, text)) return;
+
   if (text == "/start" || text == "/help") {
     std::string err;
     workflow.notify_text(
         "Catch the Letter\n\n"
+        "*Почтовый ассистент:*\n"
+        "/mail — главное меню почты\n"
+        "/important — важные письма\n"
+        "/unread — непрочитанные\n"
+        "/digest — дайджест\n"
+        "/search <запрос> — поиск\n\n"
+        "*Формы:*\n"
         "/status — краткий статус\n"
         "/forms — активные формы\n"
         "/cancel — отменить текущий Telegram-диалог\n\n"

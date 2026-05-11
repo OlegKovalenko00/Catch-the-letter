@@ -1,24 +1,19 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
-#include <algorithm> // transform
-#include <array> // array
-#include <forward_list> // forward_list
-#include <iterator> // inserter, front_inserter, end
-#include <map> // map
-#include <string> // string
-#include <tuple> // tuple, make_tuple
-#include <type_traits> // is_arithmetic, is_same, is_enum, underlying_type, is_convertible
-#include <unordered_map> // unordered_map
-#include <utility> // pair, declval
-#include <valarray> // valarray
+#include <algorithm>
+#include <array>
+#include <forward_list>
+#include <iterator>
+#include <map>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <valarray>
 
 #include <nlohmann/detail/exceptions.hpp>
 #include <nlohmann/detail/macro_scope.hpp>
@@ -43,7 +38,7 @@ inline void from_json(const BasicJsonType& j, typename std::nullptr_t& n)
     n = nullptr;
 }
 
-// overloads for basic_json template parameters
+
 template < typename BasicJsonType, typename ArithmeticType,
            enable_if_t < std::is_arithmetic<ArithmeticType>::value&&
                          !std::is_same<ArithmeticType, typename BasicJsonType::boolean_t>::value,
@@ -144,9 +139,9 @@ inline void from_json(const BasicJsonType& j, EnumType& e)
     get_arithmetic_value(j, val);
     e = static_cast<EnumType>(val);
 }
-#endif  // JSON_DISABLE_ENUM_SERIALIZATION
+#endif
 
-// forward_list doesn't have an insert method
+
 template<typename BasicJsonType, typename T, typename Allocator,
          enable_if_t<is_getable<BasicJsonType, T>::value, int> = 0>
 inline void from_json(const BasicJsonType& j, std::forward_list<T, Allocator>& l)
@@ -163,7 +158,7 @@ inline void from_json(const BasicJsonType& j, std::forward_list<T, Allocator>& l
     });
 }
 
-// valarray doesn't have an insert method
+
 template<typename BasicJsonType, typename T,
          enable_if_t<is_getable<BasicJsonType, T>::value, int> = 0>
 inline void from_json(const BasicJsonType& j, std::valarray<T>& l)
@@ -181,7 +176,7 @@ inline void from_json(const BasicJsonType& j, std::valarray<T>& l)
 }
 
 template<typename BasicJsonType, typename T, std::size_t N>
-auto from_json(const BasicJsonType& j, T (&arr)[N])  // NOLINT(cppcoreguidelines-avoid-c-arrays,hicpp-avoid-c-arrays,modernize-avoid-c-arrays)
+auto from_json(const BasicJsonType& j, T (&arr)[N])
 -> decltype(j.template get<T>(), void())
 {
     for (std::size_t i = 0; i < N; ++i)
@@ -191,14 +186,14 @@ auto from_json(const BasicJsonType& j, T (&arr)[N])  // NOLINT(cppcoreguidelines
 }
 
 template<typename BasicJsonType>
-inline void from_json_array_impl(const BasicJsonType& j, typename BasicJsonType::array_t& arr, priority_tag<3> /*unused*/)
+inline void from_json_array_impl(const BasicJsonType& j, typename BasicJsonType::array_t& arr, priority_tag<3> )
 {
     arr = *j.template get_ptr<const typename BasicJsonType::array_t*>();
 }
 
 template<typename BasicJsonType, typename T, std::size_t N>
 auto from_json_array_impl(const BasicJsonType& j, std::array<T, N>& arr,
-                          priority_tag<2> /*unused*/)
+                          priority_tag<2> )
 -> decltype(j.template get<T>(), void())
 {
     for (std::size_t i = 0; i < N; ++i)
@@ -211,7 +206,7 @@ template<typename BasicJsonType, typename ConstructibleArrayType,
          enable_if_t<
              std::is_assignable<ConstructibleArrayType&, ConstructibleArrayType>::value,
              int> = 0>
-auto from_json_array_impl(const BasicJsonType& j, ConstructibleArrayType& arr, priority_tag<1> /*unused*/)
+auto from_json_array_impl(const BasicJsonType& j, ConstructibleArrayType& arr, priority_tag<1> )
 -> decltype(
     arr.reserve(std::declval<typename ConstructibleArrayType::size_type>()),
     j.template get<typename ConstructibleArrayType::value_type>(),
@@ -224,8 +219,8 @@ auto from_json_array_impl(const BasicJsonType& j, ConstructibleArrayType& arr, p
     std::transform(j.begin(), j.end(),
                    std::inserter(ret, end(ret)), [](const BasicJsonType & i)
     {
-        // get<BasicJsonType>() returns *this, this won't call a from_json
-        // method when value_type is BasicJsonType
+
+
         return i.template get<typename ConstructibleArrayType::value_type>();
     });
     arr = std::move(ret);
@@ -236,7 +231,7 @@ template<typename BasicJsonType, typename ConstructibleArrayType,
              std::is_assignable<ConstructibleArrayType&, ConstructibleArrayType>::value,
              int> = 0>
 inline void from_json_array_impl(const BasicJsonType& j, ConstructibleArrayType& arr,
-                                 priority_tag<0> /*unused*/)
+                                 priority_tag<0> )
 {
     using std::end;
 
@@ -245,8 +240,8 @@ inline void from_json_array_impl(const BasicJsonType& j, ConstructibleArrayType&
         j.begin(), j.end(), std::inserter(ret, end(ret)),
         [](const BasicJsonType & i)
     {
-        // get<BasicJsonType>() returns *this, this won't call a from_json
-        // method when value_type is BasicJsonType
+
+
         return i.template get<typename ConstructibleArrayType::value_type>();
     });
     arr = std::move(ret);
@@ -275,7 +270,7 @@ void())
 
 template < typename BasicJsonType, typename T, std::size_t... Idx >
 std::array<T, sizeof...(Idx)> from_json_inplace_array_impl(BasicJsonType&& j,
-        identity_tag<std::array<T, sizeof...(Idx)>> /*unused*/, index_sequence<Idx...> /*unused*/)
+        identity_tag<std::array<T, sizeof...(Idx)>> , index_sequence<Idx...> )
 {
     return { { std::forward<BasicJsonType>(j).at(Idx).template get<T>()... } };
 }
@@ -325,10 +320,7 @@ inline void from_json(const BasicJsonType& j, ConstructibleObjectType& obj)
     obj = std::move(ret);
 }
 
-// overload for arithmetic types, not chosen for basic_json template arguments
-// (BooleanType, etc..); note: Is it really necessary to provide explicit
-// overloads for boolean_t etc. in case of a custom BooleanType which is not
-// an arithmetic type?
+
 template < typename BasicJsonType, typename ArithmeticType,
            enable_if_t <
                std::is_arithmetic<ArithmeticType>::value&&
@@ -374,32 +366,32 @@ inline void from_json(const BasicJsonType& j, ArithmeticType& val)
 }
 
 template<typename BasicJsonType, typename... Args, std::size_t... Idx>
-std::tuple<Args...> from_json_tuple_impl_base(BasicJsonType&& j, index_sequence<Idx...> /*unused*/)
+std::tuple<Args...> from_json_tuple_impl_base(BasicJsonType&& j, index_sequence<Idx...> )
 {
     return std::make_tuple(std::forward<BasicJsonType>(j).at(Idx).template get<Args>()...);
 }
 
 template < typename BasicJsonType, class A1, class A2 >
-std::pair<A1, A2> from_json_tuple_impl(BasicJsonType&& j, identity_tag<std::pair<A1, A2>> /*unused*/, priority_tag<0> /*unused*/)
+std::pair<A1, A2> from_json_tuple_impl(BasicJsonType&& j, identity_tag<std::pair<A1, A2>> , priority_tag<0> )
 {
     return {std::forward<BasicJsonType>(j).at(0).template get<A1>(),
             std::forward<BasicJsonType>(j).at(1).template get<A2>()};
 }
 
 template<typename BasicJsonType, typename A1, typename A2>
-inline void from_json_tuple_impl(BasicJsonType&& j, std::pair<A1, A2>& p, priority_tag<1> /*unused*/)
+inline void from_json_tuple_impl(BasicJsonType&& j, std::pair<A1, A2>& p, priority_tag<1> )
 {
     p = from_json_tuple_impl(std::forward<BasicJsonType>(j), identity_tag<std::pair<A1, A2>> {}, priority_tag<0> {});
 }
 
 template<typename BasicJsonType, typename... Args>
-std::tuple<Args...> from_json_tuple_impl(BasicJsonType&& j, identity_tag<std::tuple<Args...>> /*unused*/, priority_tag<2> /*unused*/)
+std::tuple<Args...> from_json_tuple_impl(BasicJsonType&& j, identity_tag<std::tuple<Args...>> , priority_tag<2> )
 {
     return from_json_tuple_impl_base<BasicJsonType, Args...>(std::forward<BasicJsonType>(j), index_sequence_for<Args...> {});
 }
 
 template<typename BasicJsonType, typename... Args>
-inline void from_json_tuple_impl(BasicJsonType&& j, std::tuple<Args...>& t, priority_tag<3> /*unused*/)
+inline void from_json_tuple_impl(BasicJsonType&& j, std::tuple<Args...>& t, priority_tag<3> )
 {
     t = from_json_tuple_impl_base<BasicJsonType, Args...>(std::forward<BasicJsonType>(j), index_sequence_for<Args...> {});
 }
@@ -479,19 +471,18 @@ struct from_json_fn
     }
 };
 
-}  // namespace detail
+}
 
 #ifndef JSON_HAS_CPP_17
-/// namespace to hold default `from_json` function
-/// to see why this is required:
-/// http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2015/n4381.html
-namespace // NOLINT(cert-dcl59-cpp,fuchsia-header-anon-namespaces,google-build-namespaces)
+
+
+namespace
 {
 #endif
-JSON_INLINE_VARIABLE constexpr const auto& from_json = // NOLINT(misc-definitions-in-headers)
+JSON_INLINE_VARIABLE constexpr const auto& from_json =
     detail::static_const<detail::from_json_fn>::value;
 #ifndef JSON_HAS_CPP_17
-}  // namespace
+}
 #endif
 
 NLOHMANN_JSON_NAMESPACE_END

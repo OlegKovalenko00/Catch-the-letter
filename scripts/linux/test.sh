@@ -1,7 +1,5 @@
 #!/bin/bash
-# Linux test script for Catch-the-letter
-# Runs smoke tests against running app
-# Usage: ./scripts/linux/test.sh
+
 
 set -e
 
@@ -12,14 +10,14 @@ BASE_URL="http://127.0.0.1:8080"
 BROWSER_WORKER_URL="http://127.0.0.1:8090"
 ERRORS=0
 
-# Test function
+
 test_endpoint() {
     local name=$1
     local url=$2
     local method=${3:-GET}
-    
+
     echo "Testing: $name"
-    
+
     if [ "$method" = "GET" ]; then
         if curl -s -m 30 "$url" > /dev/null 2>&1; then
             echo "  [OK]"

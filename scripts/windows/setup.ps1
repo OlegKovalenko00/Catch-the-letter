@@ -1,6 +1,6 @@
-# Windows setup script for Catch-the-letter
-# Copies config templates and guides user through configuration
-# Usage: .\scripts\windows\setup.ps1
+
+
+
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
@@ -8,7 +8,7 @@ Set-Location $ProjectRoot
 
 Write-Host "=== Catch-the-letter Windows Setup ===" -ForegroundColor Green
 
-# Copy .env
+
 if (-Not (Test-Path ".env")) {
     if (Test-Path ".env.windows.example") {
         Copy-Item ".env.windows.example" ".env"
@@ -22,7 +22,7 @@ else {
     Write-Host "[OK] .env already exists" -ForegroundColor Green
 }
 
-# Copy config files
+
 $configs = @(
     @{src = "config/app.example.json"; dst = "config/app.json"},
     @{src = "config/rules.example.json"; dst = "config/rules.json"},

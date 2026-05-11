@@ -1,10 +1,5 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
@@ -43,7 +38,7 @@ class json_ref
         : owned_value(std::forward<Args>(args)...)
     {}
 
-    // class should be movable only
+
     json_ref(json_ref&&) noexcept = default;
     json_ref(const json_ref&) = delete;
     json_ref& operator=(const json_ref&) = delete;
@@ -74,5 +69,5 @@ class json_ref
     value_type const* value_ref = nullptr;
 };
 
-}  // namespace detail
+}
 NLOHMANN_JSON_NAMESPACE_END

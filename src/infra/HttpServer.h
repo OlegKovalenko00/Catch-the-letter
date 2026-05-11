@@ -39,6 +39,23 @@ struct http_handlers {
   std::function<bool(const std::string&, const std::string&, std::string&)> captcha_click_form;
   std::function<bool(const std::string&, std::string&)> captcha_reinspect_form;
   std::function<bool(std::string&)> create_demo_captcha_form;
+
+  std::function<std::string()> mail_debug_json;
+  std::function<std::string(int)> mail_scan_last_json;
+  std::function<std::string(const std::string&)> mail_reset_state_json;
+
+  std::function<std::string(const std::string&)> expand_profile_preview_json;
+  std::function<bool(const std::string&, std::string&)> apply_profile_expansion_json;
+
+
+  std::function<std::string(const std::string&, int, int)> mail_list_json;
+  std::function<std::string(const std::string&)> mail_get_json;
+  std::function<bool(const std::string&, std::string&)> mail_mark_read;
+  std::function<bool(const std::string&, std::string&)> mail_archive;
+  std::function<bool(const std::string&, const std::string&, std::string&)> mail_mute;
+  std::function<std::string(const std::string&)> mail_attachments_json;
+  std::function<bool(const std::string&, std::string&, std::string&, std::string&, std::string&)> mail_attachment_download;
+  std::function<std::string(const std::string&, int, int)> mail_search_json;
 };
 
 class http_server {

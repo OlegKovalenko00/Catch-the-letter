@@ -1,17 +1,5 @@
-# Standalone Docker Compose for Windows 10/11 + Docker Desktop
-# This file contains ONLY Windows-specific services (no base docker-compose.yml needed)
-# 
-# Usage:
-#   docker compose -f docker-compose.windows-standalone.yml up --build
-#   docker compose -f docker-compose.windows-standalone.yml --profile llm up --build
-#
-# CRITICAL: This file replaces docker-compose.yml on Windows
-# Ports are correctly bound without 127.0.0.1 restrictions
-#
-# Access:
-#   - Web UI: http://localhost:8080
-#   - Browser Worker: internal http://browser-worker:8090
-#   - Ollama: internal http://ollama:11434
+
+
 
 services:
   app:
@@ -21,7 +9,7 @@ services:
     env_file:
       - path: .env
         required: false
-    # Windows Docker Desktop - simple port binding, no 127.0.0.1
+
     ports:
       - "8080:8080"
     volumes:
@@ -49,7 +37,7 @@ services:
     build:
       context: ./browser-worker
       dockerfile: Dockerfile
-    # Windows Docker Desktop - simple port binding
+
     ports:
       - "8090:8090"
     volumes:
@@ -62,7 +50,7 @@ services:
     image: ollama/ollama:latest
     profiles:
       - llm
-    # Windows Docker Desktop - simple port binding
+
     ports:
       - "11434:11434"
     volumes:

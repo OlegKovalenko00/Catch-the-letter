@@ -89,7 +89,7 @@ form_field parse_field(const json& item) {
   return field;
 }
 
-}  // namespace
+}
 
 browser_worker_client::browser_worker_client(browser_worker_config cfg) : cfg(std::move(cfg)) {
   this->cfg.endpoint = trim_slash(this->cfg.endpoint);

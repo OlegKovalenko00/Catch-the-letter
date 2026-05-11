@@ -13,6 +13,13 @@ struct attachment {
   std::string filename;
   std::string mime_type;
   std::size_t size_bytes = 0;
+  std::string part_id;
+  std::string content_id;
+  std::string disposition;
+  bool safe_to_preview = false;
+  bool downloaded = false;
+  std::string local_path;
+  std::string sha256;
 };
 
 struct message {
@@ -31,4 +38,6 @@ struct message {
   std::vector<std::string> labels;
   std::vector<message_link> links;
   std::vector<attachment> attachments;
+  bool parse_suspect = false;
+  std::string parse_strategy;
 };

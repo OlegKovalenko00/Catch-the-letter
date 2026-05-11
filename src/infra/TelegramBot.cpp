@@ -22,7 +22,7 @@ std::string chat_id_from_json(const json& value) {
   return "";
 }
 
-}  // namespace
+}
 
 telegram_bot::telegram_bot(telegram_config cfg) : cfg(std::move(cfg)) {}
 
@@ -170,4 +170,89 @@ bool telegram_bot::answer_callback_query(const std::string& callback_query_id,
   json payload = {{"callback_query_id", callback_query_id}};
   if (!text.empty()) payload["text"] = text;
   return request("answerCallbackQuery", payload, response, err);
+}
+
+bool telegram_bot::send_document(const std::string& file_path,
+                                  const std::string& caption,
+                                  std::string& err) const {
+  if (!enabled()) { err = "bot not configured"; return false; }
+
+  CURL* curl = curl_easy_init();
+  if (!curl) { err = "curl init failed"; return false; }
+
+  std::string url = "https://api.telegram.org/bot" + cfg.bot_token + "/sendDocument";
+  if (!cfg.proxy_url.empty()) curl_easy_setopt(curl, CURLOPT_PROXY, cfg.proxy_url.c_str());
+
+  curl_mime* mime = curl_mime_init(curl);
+  curl_mimepart* part;
+
+  part = curl_mime_addpart(mime);
+  curl_mime_name(part, "chat_id");
+  curl_mime_data(part, cfg.chat_id.c_str(), CURL_ZERO_TERMINATED);
+
+  part = curl_mime_addpart(mime);
+  curl_mime_name(part, "document");
+  curl_mime_filedata(part, file_path.c_str());
+
+  if (!caption.empty()) {
+    part = curl_mime_addpart(mime);
+    curl_mime_name(part, "caption");
+    curl_mime_data(part, caption.c_str(), CURL_ZERO_TERMINATED);
+  }
+
+  std::string body;
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+  CURLcode rc = curl_easy_perform(curl);
+  long code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+  curl_mime_free(mime);
+  curl_easy_cleanup(curl);
+
+  if (rc != CURLE_OK) { err = curl_easy_strerror(rc); return false; }
+  if (code < 200 || code >= 300) {
+    std::ostringstream ss;
+    ss << "sendDocument HTTP " << code << ": " << body;
+    err = ss.str();
+    return false;
+  }
+  try {
+    auto resp = json::parse(body.empty() ? "{}" : body);
+    if (!resp.value("ok", false)) { err = resp.value("description", "sendDocument failed"); return false; }
+  } catch (const std::exception& e) {
+    err = std::string("JSON parse: ") + e.what();
+    return false;
+  }
+  return true;
+}
+
+bool telegram_bot::edit_message_text(const std::string& chat_id_arg,
+                                      long long message_id,
+                                      const std::string& text,
+                                      const std::vector<std::vector<telegram_button>>& inline_keyboard,
+                                      std::string& err) const {
+  if (!enabled()) { err = "bot not configured"; return false; }
+  json payload = {{"chat_id", chat_id_arg}, {"message_id", message_id}, {"text", text}};
+  if (!inline_keyboard.empty()) {
+    json rows = json::array();
+    for (const auto& row : inline_keyboard) {
+      json row_json = json::array();
+      for (const auto& btn : row) {
+        json b = {{"text", btn.text}};
+        if (!btn.callback_data.empty()) b["callback_data"] = btn.callback_data;
+        else if (!btn.url.empty()) b["url"] = btn.url;
+        row_json.push_back(b);
+      }
+      rows.push_back(row_json);
+    }
+    payload["reply_markup"] = {{"inline_keyboard", rows}};
+  }
+  json response;
+  return request("editMessageText", payload, response, err);
 }

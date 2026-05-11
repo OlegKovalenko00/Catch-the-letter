@@ -99,20 +99,20 @@ def touch_session(session_id: str) -> dict[str, Any] | None:
     return session
 
 
-# Chrome 124 UA used for all contexts so Yandex SmartCaptcha sees a plausible browser.
+
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Init script injected into every page to hide Playwright/automation markers.
+
 STEALTH_INIT_SCRIPT = """
 (function () {
-  // Hide webdriver flag
+
   Object.defineProperty(navigator, 'webdriver', {get: () => undefined, configurable: true});
 
-  // Realistic plugin list
+
   const _plugins = [
     {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
     {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
@@ -123,15 +123,15 @@ STEALTH_INIT_SCRIPT = """
   _plugins.refresh = () => {};
   Object.defineProperty(navigator, 'plugins', {get: () => _plugins});
 
-  // Languages matching Russian locale
+
   Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en-US', 'en']});
 
-  // chrome runtime stub
+
   if (!window.chrome) {
     window.chrome = {runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {}};
   }
 
-  // Remove Playwright globals
+
   try { delete window.__playwright; } catch(_) {}
   try { delete window.__pwInitScripts; } catch(_) {}
   try { delete window.playwright; } catch(_) {}
@@ -164,10 +164,10 @@ async def create_stealth_context(playwright):
 
 async def wait_for_yandex_forms(page: Page) -> None:
     """Extra wait for Yandex Forms React rendering after domcontentloaded."""
-    # Primary: Yandex Forms always renders inputs with name="answer_*" — most reliable
+
     try:
         await page.wait_for_selector('input[name^="answer_"], textarea[name^="answer_"]', timeout=12000)
-        await page.wait_for_timeout(800)  # let React finish rendering question titles
+        await page.wait_for_timeout(800)
         return
     except Exception:
         pass
@@ -187,7 +187,7 @@ async def wait_for_yandex_forms(page: Page) -> None:
             return
         except Exception:
             pass
-    # Fallback: wait for network to settle a bit more
+
     try:
         await page.wait_for_load_state("networkidle", timeout=8000)
     except Exception:
@@ -339,10 +339,10 @@ async def screenshot(page: Page, session_id: str, suffix: str) -> str:
 
 FIELD_SCRIPT = r"""
 () => {
-  // Detect invisible/blank Unicode: U+3164 Hangul Filler, zero-width spaces, NBSP, BOM, etc.
+
   function isBlankText(text) {
     if (!text) return true;
-    // Strip Hangul Filler (U+3164), zero-width spaces, NBSP, BOM, and whitespace
+
     return text.replace(/[ㅤ​‌‍\u200E\u200F ﻿⁠᠎\s]/g, '').length === 0;
   }
   function cssPath(el) {
@@ -366,14 +366,14 @@ FIELD_SCRIPT = r"""
     return parts.join(' > ');
   }
   function compact(text) {
-    // Strip invisible Unicode chars before whitespace normalization
+
     return (text || '').replace(/[ㅤ​‌‍‎‏﻿ ⁠᠎͏]/g, '').replace(/\s+/g, ' ').trim();
   }
   function normalized(text) {
     return compact(text).toLowerCase();
   }
-  // Walk DOM ancestors to find Yandex Forms question title text (sits in a sibling div above input).
-  // Yandex Forms does NOT use <label for="..."> — question text is in a preceding sibling/ancestor div.
+
+
   function yandexAncestorLabel(node) {
     let cur = node.parentElement;
     for (let depth = 0; depth < 9 && cur && cur !== document.body; depth++) {
@@ -381,7 +381,7 @@ FIELD_SCRIPT = r"""
       if (parent) {
         const siblings = Array.from(parent.children);
         const idx = siblings.indexOf(cur);
-        // Check up to 3 preceding siblings for question text
+
         for (let i = Math.max(0, idx - 3); i < idx; i++) {
           const sib = siblings[i];
           const tag = sib.tagName;
@@ -390,7 +390,7 @@ FIELD_SCRIPT = r"""
           if (!isBlankText(txt) && txt.length > 2 && txt.length < 600) return txt;
         }
       }
-      // Look for title-class children of current ancestor that don't contain node
+
       const titleEls = cur.querySelectorAll('[class*="title" i], [class*="label" i], [class*="caption" i], [class*="question" i], [class*="heading" i], legend');
       for (const t of titleEls) {
         if (t === node || t.contains(node) || node.contains(t)) continue;
@@ -419,7 +419,7 @@ FIELD_SCRIPT = r"""
     }
     const aria = container.getAttribute('aria-label');
     if (aria && !isBlankText(aria)) return aria;
-    // Yandex Forms: walk ancestors for question title
+
     const name = node.getAttribute('name') || '';
     if (name.startsWith('answer_')) {
       const yLabel = yandexAncestorLabel(node);
@@ -447,30 +447,30 @@ FIELD_SCRIPT = r"""
     return (!isBlankText(t)) ? t : (node.value || '');
   }
   function labelFor(node) {
-    // 1. <label for="id"> association
+
     if (node.labels && node.labels.length) {
       const t = Array.from(node.labels).map(x => x.innerText.trim()).filter(x => !isBlankText(x)).join(' ');
       if (!isBlankText(t)) return t;
     }
-    // 2. aria-label
+
     const aria = node.getAttribute('aria-label');
     if (aria && !isBlankText(aria)) return aria;
-    // 3. placeholder (skip if invisible Unicode like U+3164 from Yandex Forms)
+
     const placeholder = node.getAttribute('placeholder');
     if (placeholder && !isBlankText(placeholder)) return placeholder;
-    // 4. Ancestor <label>
+
     const parentLabel = node.closest('label');
     if (parentLabel) {
       const t = parentLabel.innerText.trim();
       if (!isBlankText(t)) return t;
     }
-    // 5. Yandex Forms: name="answer_*" → walk DOM ancestors for question title div
+
     const name = node.getAttribute('name') || '';
     if (name.startsWith('answer_')) {
       const yLabel = yandexAncestorLabel(node);
       if (!isBlankText(yLabel)) return yLabel;
     }
-    // 6. Nearest question block inner text
+
     const block = node.closest('[role="listitem"], .freebirdFormviewerComponentsQuestionBaseRoot, div');
     if (block) {
       const t = compact(block.innerText).slice(0, 300);
@@ -512,7 +512,7 @@ FIELD_SCRIPT = r"""
     }
     return false;
   }
-  // Parse Yandex Forms name attribute: "answer_short_text_1685088" → {type: "answer_short_text", id: "1685088"}
+
   function parseYandexName(name) {
     const m = name.match(/^(answer_[a-z_]+?)_(\d+)$/);
     return m ? {apiAnswerType: m[1], yandexQuestionId: m[2]} : {apiAnswerType: '', yandexQuestionId: ''};
@@ -921,6 +921,39 @@ async def fill_one(page: Page, field: FillField) -> None:
         return
     await loc.fill(value)
 
+    try:
+        actual = await loc.input_value()
+        if actual != value:
+            raise RuntimeError(f"fill verification failed: expected={value!r} actual={actual!r}")
+    except Exception:
+        pass
+
+
+async def verify_field(page: Page, field: Any) -> Any:
+    """Return a mismatch description if the field value doesn't match what was filled, else None."""
+    selector = field.selector or f"#{field.id}"
+    try:
+        loc = page.locator(selector).first
+        typ = ((await loc.get_attribute("type")) or "").lower()
+        role = ((await loc.get_attribute("role")) or "").lower()
+        if typ in {"radio"} or role == "radio":
+            checked = await loc.is_checked()
+            if not checked:
+                return "radio not checked after fill"
+            return None
+        if typ in {"checkbox"} or role == "checkbox":
+            expected_checked = field.value.lower() in {"1", "true", "yes", "да", "on"}
+            actual_checked = await loc.is_checked()
+            if expected_checked != actual_checked:
+                return f"checkbox checked={actual_checked} expected={expected_checked}"
+            return None
+        actual = await loc.input_value()
+        if actual != field.value:
+            return f"expected={field.value!r} actual={actual!r}"
+    except Exception:
+        pass
+    return None
+
 
 @app.post("/fill-form")
 async def fill_form(req: FillRequest) -> dict[str, Any]:
@@ -931,14 +964,29 @@ async def fill_form(req: FillRequest) -> dict[str, Any]:
     page: Page = session["page"]
     filled: list[str] = []
     failed: list[dict[str, str]] = []
+    verified: list[str] = []
+    verify_failed: list[dict[str, str]] = []
     for field in req.fields:
         try:
             await fill_one(page, field)
             filled.append(field.id)
+            mismatch = await verify_field(page, field)
+            if mismatch:
+                verify_failed.append({"id": field.id, "error": mismatch})
+            else:
+                verified.append(field.id)
         except Exception as exc:
             failed.append({"id": field.id, "error": str(exc)})
     shot = await screenshot(page, req.session_id, "filled")
-    return {"ok": len(failed) == 0, "filled": filled, "failed": failed, "screenshot_path": shot, "error": ""}
+    return {
+        "ok": len(failed) == 0 and len(verify_failed) == 0,
+        "filled": filled,
+        "failed": failed,
+        "verified": verified,
+        "verify_failed": verify_failed,
+        "screenshot_path": shot,
+        "error": "",
+    }
 
 
 @app.post("/submit-form")

@@ -117,9 +117,9 @@ bool is_blocked_ipv6_addr(const in6_addr& addr) {
   }
   if (loopback && b[15] == 1) return true;
 
-  if ((b[0] & 0xfe) == 0xfc) return true;  // fc00::/7
-  if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return true;  // fe80::/10
-  if (b[0] == 0xff) return true;  // multicast
+  if ((b[0] & 0xfe) == 0xfc) return true;
+  if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return true;
+  if (b[0] == 0xff) return true;
   return false;
 }
 
@@ -194,7 +194,7 @@ bool resolved_to_blocked_address(const std::string& host, std::string& reason) {
   return blocked;
 }
 
-}  // namespace
+}
 
 bool is_allowed_url(const std::string& url, const security_config& cfg, std::string& reason) {
   parsed_url parsed;

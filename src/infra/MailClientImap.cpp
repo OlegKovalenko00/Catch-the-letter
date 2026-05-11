@@ -1,12 +1,12 @@
 #include "MailClient.h"
+#include "ImapParse.h"
 
 #include <curl/curl.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
+#include <iostream>
 #include <regex>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,35 +14,21 @@
 namespace {
 
 struct curl_global_guard {
-  curl_global_guard() { curl_global_init(CURL_GLOBAL_DEFAULT); }
+  curl_global_guard()  { curl_global_init(CURL_GLOBAL_DEFAULT); }
   ~curl_global_guard() { curl_global_cleanup(); }
 };
 
 static curl_global_guard curl_guard;
 
-size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+std::size_t write_cb(char* ptr, std::size_t size, std::size_t nmemb, void* userdata) {
   auto* out = static_cast<std::string*>(userdata);
   out->append(ptr, size * nmemb);
   return size * nmemb;
 }
 
-std::string trim(const std::string& s) {
-  size_t b = 0;
-  while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) b++;
-  size_t e = s.size();
-  while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) e--;
-  return s.substr(b, e - b);
-}
-
-std::string to_lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return s;
-}
-
 std::uint64_t parse_uint64_or_zero(const std::string& text) {
   try {
-    size_t pos = 0;
+    std::size_t pos = 0;
     std::uint64_t value = std::stoull(text, &pos);
     return pos == text.size() ? value : 0;
   } catch (...) {
@@ -50,271 +36,17 @@ std::uint64_t parse_uint64_or_zero(const std::string& text) {
   }
 }
 
-std::string get_header(const std::vector<std::string>& headers, const std::string& name) {
-  std::string needle = to_lower(name);
-  for (const auto& h : headers) {
-    auto pos = h.find(':');
-    if (pos == std::string::npos) continue;
-    std::string key = to_lower(trim(h.substr(0, pos)));
-    if (key == needle) return trim(h.substr(pos + 1));
-  }
+
+std::string parse_uid_validity(const std::string& response) {
+  static const std::regex re(R"(\[UIDVALIDITY\s+(\d+)\])", std::regex::icase);
+  std::smatch m;
+  if (std::regex_search(response, m, re)) return m[1].str();
+  static const std::regex re2(R"(UIDVALIDITY\s+(\d+))", std::regex::icase);
+  if (std::regex_search(response, m, re2)) return m[1].str();
   return "";
 }
 
-std::string base64_decode(const std::string& input) {
-  static const std::string alphabet =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  int val = 0;
-  int bits = -8;
-  for (unsigned char c : input) {
-    if (std::isspace(c)) continue;
-    if (c == '=') break;
-    auto pos = alphabet.find(static_cast<char>(c));
-    if (pos == std::string::npos) continue;
-    val = (val << 6) + static_cast<int>(pos);
-    bits += 6;
-    if (bits >= 0) {
-      out.push_back(static_cast<char>((val >> bits) & 0xFF));
-      bits -= 8;
-    }
-  }
-  return out;
 }
-
-int hex_value(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return 10 + c - 'a';
-  if (c >= 'A' && c <= 'F') return 10 + c - 'A';
-  return -1;
-}
-
-std::string quoted_printable_decode(const std::string& input, bool header_mode) {
-  std::string out;
-  for (size_t i = 0; i < input.size(); ++i) {
-    char c = input[i];
-    if (header_mode && c == '_') {
-      out.push_back(' ');
-      continue;
-    }
-    if (c == '=' && i + 2 < input.size()) {
-      if (input[i + 1] == '\r' && input[i + 2] == '\n') {
-        i += 2;
-        continue;
-      }
-      if (input[i + 1] == '\n') {
-        i += 1;
-        continue;
-      }
-      int hi = hex_value(input[i + 1]);
-      int lo = hex_value(input[i + 2]);
-      if (hi >= 0 && lo >= 0) {
-        out.push_back(static_cast<char>((hi << 4) | lo));
-        i += 2;
-        continue;
-      }
-    }
-    out.push_back(c);
-  }
-  return out;
-}
-
-std::string decode_mime_header(const std::string& value) {
-  static const std::regex encoded_word(R"(=\?([^?]+)\?([bBqQ])\?([^?]*)\?=)");
-  std::string out;
-  size_t last = 0;
-  auto begin = std::sregex_iterator(value.begin(), value.end(), encoded_word);
-  auto end = std::sregex_iterator();
-  for (auto it = begin; it != end; ++it) {
-    out.append(value.substr(last, static_cast<size_t>(it->position()) - last));
-    std::string encoding = (*it)[2].str();
-    std::string payload = (*it)[3].str();
-    if (encoding == "B" || encoding == "b") {
-      out.append(base64_decode(payload));
-    } else {
-      out.append(quoted_printable_decode(payload, true));
-    }
-    last = static_cast<size_t>(it->position() + it->length());
-  }
-  out.append(value.substr(last));
-  return trim(out);
-}
-
-void split_headers_body(const std::string& raw, std::vector<std::string>& headers, std::string& body) {
-  size_t pos = raw.find("\r\n\r\n");
-  size_t sep_len = 4;
-  if (pos == std::string::npos) {
-    pos = raw.find("\n\n");
-    sep_len = 2;
-  }
-  std::string header_block = (pos == std::string::npos) ? raw : raw.substr(0, pos);
-  body = (pos == std::string::npos) ? "" : raw.substr(pos + sep_len);
-
-  std::istringstream iss(header_block);
-  std::string line;
-  std::string current;
-  while (std::getline(iss, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (!line.empty() && (line[0] == ' ' || line[0] == '\t')) {
-      current += " " + trim(line);
-      continue;
-    }
-    if (!current.empty()) headers.push_back(current);
-    current = line;
-  }
-  if (!current.empty()) headers.push_back(current);
-}
-
-std::string extract_part_by_content_type(const std::string& raw, const std::string& content_type) {
-  std::string lower = to_lower(raw);
-  std::string needle = "content-type: " + content_type;
-  size_t pos = lower.find(needle);
-  if (pos == std::string::npos) return "";
-  size_t body_start = raw.find("\r\n\r\n", pos);
-  size_t sep = 4;
-  if (body_start == std::string::npos) {
-    body_start = raw.find("\n\n", pos);
-    sep = 2;
-  }
-  if (body_start == std::string::npos) return "";
-  body_start += sep;
-  size_t end = raw.find("\r\n--", body_start);
-  if (end == std::string::npos) end = raw.find("\n--", body_start);
-  std::string part = raw.substr(body_start, end == std::string::npos ? std::string::npos : end - body_start);
-  size_t qp_header = lower.rfind("content-transfer-encoding:", body_start);
-  if (qp_header != std::string::npos && qp_header > pos) {
-    std::string enc_region = lower.substr(qp_header, body_start - qp_header);
-    if (enc_region.find("quoted-printable") != std::string::npos) {
-      part = quoted_printable_decode(part, false);
-    } else if (enc_region.find("base64") != std::string::npos) {
-      part = base64_decode(part);
-    }
-  }
-  return trim(part);
-}
-
-std::string strip_html_tags(std::string html) {
-  html = std::regex_replace(html, std::regex("<(script|style)[^>]*>[\\s\\S]*?</\\1>", std::regex::icase), " ");
-  html = std::regex_replace(html, std::regex("<br\\s*/?>", std::regex::icase), "\n");
-  html = std::regex_replace(html, std::regex("</p>", std::regex::icase), "\n");
-  html = std::regex_replace(html, std::regex("<[^>]+>", std::regex::icase), " ");
-  return trim(html);
-}
-
-std::string html_entity_decode(std::string text) {
-  auto replace_all = [](std::string& s, const std::string& from, const std::string& to) {
-    size_t pos = 0;
-    while ((pos = s.find(from, pos)) != std::string::npos) {
-      s.replace(pos, from.size(), to);
-      pos += to.size();
-    }
-  };
-  replace_all(text, "&amp;", "&");
-  replace_all(text, "&lt;", "<");
-  replace_all(text, "&gt;", ">");
-  replace_all(text, "&quot;", "\"");
-  replace_all(text, "&#39;", "'");
-  return text;
-}
-
-std::string snippet_from_body(const std::string& body, size_t max_len = 200) {
-  std::string s = body;
-  for (auto& c : s) {
-    if (c == '\r' || c == '\n' || c == '\t') c = ' ';
-  }
-  if (s.size() > max_len) s.resize(max_len);
-  return trim(s);
-}
-
-std::string sanitize_url(std::string url) {
-  while (!url.empty()) {
-    char c = url.back();
-    if (c == '.' || c == ',' || c == ')' || c == ']' || c == '}' || c == ';') {
-      url.pop_back();
-      continue;
-    }
-    break;
-  }
-  return url;
-}
-
-std::string extract_domain(const std::string& url) {
-  static const std::regex re(R"(^https?://([^/:?#]+))", std::regex::icase);
-  std::smatch m;
-  if (!std::regex_search(url, m, re)) return "";
-  std::string host = m[1].str();
-  std::transform(host.begin(), host.end(), host.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return host;
-}
-
-double estimate_form_link_confidence(const std::string& url) {
-  std::string lower = to_lower(url);
-  // Exclude non-fillable response/admin/confirmation URLs that form services send in confirmation emails.
-  if (lower.find("forms.yandex.") != std::string::npos) {
-    if (lower.find("/admin/") != std::string::npos) return 0.0;   // response viewer
-    if (lower.find("/answers/") != std::string::npos) return 0.0; // submitted answers
-    if (lower.find("/success") != std::string::npos) return 0.0;  // thank-you page
-    if (lower.find("/results/") != std::string::npos) return 0.0; // results page
-    return 0.95;
-  }
-  if (lower.find("docs.google.com/forms") != std::string::npos) {
-    if (lower.find("/viewanalytics") != std::string::npos) return 0.0; // response analytics
-    if (lower.find("/closedform") != std::string::npos) return 0.0;
-    return 0.95;
-  }
-  if (lower.find("forms.gle") != std::string::npos) return 0.95;
-  if (lower.find("forms.office.com") != std::string::npos) return 0.95;
-  if (lower.find("forms.microsoft.com") != std::string::npos) return 0.95;
-  if (lower.find("portal.hse.ru/poll") != std::string::npos) return 0.9;
-  if (lower.find("lms.hse.ru") != std::string::npos) return 0.85;
-  if (lower.find("smartlms.hse.ru") != std::string::npos) return 0.85;
-  if (lower.find("form") != std::string::npos || lower.find("poll") != std::string::npos) return 0.6;
-  return 0.2;
-}
-
-void collect_links(const std::string& text, std::vector<message_link>& result, std::set<std::string>& seen) {
-  static const std::regex url_regex(R"((https?://[^\s"'<>]+))", std::regex::icase);
-
-  auto begin = std::sregex_iterator(text.begin(), text.end(), url_regex);
-  auto end = std::sregex_iterator();
-  for (auto it = begin; it != end; ++it) {
-    std::string url = sanitize_url(html_entity_decode((*it)[1].str()));
-    if (url.empty() || !seen.insert(url).second) continue;
-
-    message_link item;
-    item.url = url;
-    item.domain = extract_domain(url);
-    item.confidence = estimate_form_link_confidence(url);
-    result.push_back(std::move(item));
-  }
-}
-
-void collect_href_links(const std::string& html, std::vector<message_link>& result, std::set<std::string>& seen) {
-  static const std::regex href_regex(R"(href\s*=\s*["'](https?://[^"']+)["'])", std::regex::icase);
-  auto begin = std::sregex_iterator(html.begin(), html.end(), href_regex);
-  auto end = std::sregex_iterator();
-  for (auto it = begin; it != end; ++it) {
-    std::string url = sanitize_url(html_entity_decode((*it)[1].str()));
-    if (url.empty() || !seen.insert(url).second) continue;
-    message_link item;
-    item.url = url;
-    item.domain = extract_domain(url);
-    item.confidence = estimate_form_link_confidence(url);
-    result.push_back(std::move(item));
-  }
-}
-
-std::vector<message_link> extract_links(const std::string& text, const std::string& html = "") {
-  std::vector<message_link> result;
-  std::set<std::string> seen;
-  collect_links(text, result, seen);
-  collect_links(html, result, seen);
-  collect_href_links(html, result, seen);
-  return result;
-}
-
-}  // namespace
 
 class mail_client_imap : public mail_client {
 public:
@@ -326,34 +58,98 @@ public:
     std::vector<std::string> uids;
     std::string err;
     if (!fetch_uid_list("UID SEARCH ALL", uids, err)) return 0;
-
     std::uint64_t max_uid = 0;
-    for (const auto& uid : uids) {
+    for (const auto& uid : uids)
       max_uid = std::max(max_uid, parse_uint64_or_zero(uid));
-    }
     return max_uid;
   }
 
+
   std::vector<message> fetch_after_uid(std::uint64_t last_seen_uid) override {
-    std::vector<message> result;
-    std::uint64_t max_uid = fetch_max_uid();
-    if (max_uid <= last_seen_uid) return result;
+    auto r = fetch_after_uid_result(last_seen_uid);
+    return std::move(r.messages);
+  }
+
+  mail_fetch_result fetch_after_uid_result(std::uint64_t last_seen_uid) override {
+    mail_fetch_result result;
+    result.mailbox_id    = cfg.mailbox_id;
+    result.last_seen_uid = last_seen_uid;
+    result.uid_validity  = fetch_uid_validity();
 
     std::vector<std::string> uids;
     std::string err;
-    std::ostringstream search;
-    search << "UID SEARCH UID " << (last_seen_uid + 1) << ":" << max_uid;
-    if (!fetch_uid_list(search.str(), uids, err)) return result;
 
+    std::ostringstream search;
+    search << "UID SEARCH UID " << (last_seen_uid + 1) << ":*";
+    std::string search_cmd = search.str();
+    std::cout << "[mail] imap search cmd=" << search_cmd
+              << " mailbox=" << cfg.mailbox_id << std::endl;
+
+    if (!fetch_uid_list(search_cmd, uids, err)) {
+      std::cout << "[mail] imap search failed err=" << err << std::endl;
+      result.ok    = false;
+      result.error = err.empty() ? "imap search failed" : err;
+      return result;
+    }
+
+
+    uids.erase(std::remove_if(uids.begin(), uids.end(), [last_seen_uid](const std::string& u) {
+      return parse_uint64_or_zero(u) <= last_seen_uid;
+    }), uids.end());
     std::sort(uids.begin(), uids.end(), [](const std::string& a, const std::string& b) {
       return parse_uint64_or_zero(a) < parse_uint64_or_zero(b);
     });
 
+    result.searched_uids = uids;
+    std::cout << "[mail] imap new uids count=" << uids.size()
+              << " last_seen_uid=" << last_seen_uid << std::endl;
+
     for (const auto& uid : uids) {
+      std::cout << "[mail] fetch uid=" << uid << " mailbox=" << cfg.mailbox_id << std::endl;
       message msg;
-      if (fetch_message(uid, msg, err)) {
-        result.push_back(msg);
+      std::string fetch_err;
+      if (fetch_message(uid, msg, fetch_err)) {
+        result.fetched_uids.push_back(uid);
+        std::cout << "[mail] fetched uid=" << uid
+                  << " strategy=" << msg.parse_strategy
+                  << " from=" << msg.from
+                  << " subject=" << msg.subject
+                  << " links=" << msg.links.size()
+                  << " parse_suspect=" << msg.parse_suspect << std::endl;
+        if (msg.parse_suspect) {
+          result.parse_failed_uids.push_back(uid);
+        } else {
+          std::uint64_t uid_n = parse_uint64_or_zero(uid);
+          if (uid_n > result.max_seen_uid) result.max_seen_uid = uid_n;
+          result.messages.push_back(std::move(msg));
+        }
+      } else {
+        std::cout << "[mail] fetch failed uid=" << uid << " err=" << fetch_err << std::endl;
+        result.failed_uids.push_back(uid);
       }
+    }
+    return result;
+  }
+
+  std::vector<message> fetch_last_n(int n) override {
+    if (n <= 0) return {};
+    std::vector<std::string> all_uids;
+    std::string err;
+    std::cout << "[mail] fetch_last_n n=" << n << " mailbox=" << cfg.mailbox_id << std::endl;
+    if (!fetch_uid_list("UID SEARCH ALL", all_uids, err)) {
+      std::cout << "[mail] fetch_last_n search failed err=" << err << std::endl;
+      return {};
+    }
+    std::sort(all_uids.begin(), all_uids.end(), [](const std::string& a, const std::string& b) {
+      return parse_uint64_or_zero(a) < parse_uint64_or_zero(b);
+    });
+    if (static_cast<int>(all_uids.size()) > n)
+      all_uids.erase(all_uids.begin(), all_uids.end() - n);
+    std::vector<message> result;
+    for (const auto& uid : all_uids) {
+      message msg;
+      std::string fetch_err;
+      if (fetch_message(uid, msg, fetch_err)) result.push_back(std::move(msg));
     }
     return result;
   }
@@ -377,24 +173,27 @@ private:
       err = "curl init failed";
       return false;
     }
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERNAME, cfg.username.c_str());
-    curl_easy_setopt(curl, CURLOPT_PASSWORD, cfg.password.c_str());
-    curl_easy_setopt(curl, CURLOPT_USE_SSL, cfg.tls ? CURLUSESSL_ALL : CURLUSESSL_NONE);
+    curl_easy_setopt(curl, CURLOPT_URL,          url.c_str());
+    curl_easy_setopt(curl, CURLOPT_USERNAME,      cfg.username.c_str());
+    curl_easy_setopt(curl, CURLOPT_PASSWORD,      cfg.password.c_str());
+    curl_easy_setopt(curl, CURLOPT_USE_SSL,       cfg.tls ? CURLUSESSL_ALL : CURLUSESSL_NONE);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    if (!custom_request.empty()) {
+    if (!custom_request.empty())
       curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, custom_request.c_str());
-    }
+    char error_buffer[CURL_ERROR_SIZE] = {0};
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER,  error_buffer);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,     1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,    &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,      30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-      err = curl_easy_strerror(res);
+      err = error_buffer[0]
+          ? std::string(error_buffer)
+          : std::string(curl_easy_strerror(res));
       curl_easy_cleanup(curl);
       return false;
     }
@@ -408,52 +207,100 @@ private:
     std::string response;
     std::string url = base_url();
     if (!perform_request(url, search_command, response, err)) return false;
-
     std::istringstream iss(response);
     std::string token;
     while (iss >> token) {
       if (!token.empty() &&
           std::all_of(token.begin(), token.end(),
-                      [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                      [](unsigned char c) { return std::isdigit(c) != 0; }))
         uids.push_back(token);
-      }
     }
     return true;
   }
 
-  bool fetch_message(const std::string& uid, message& msg, std::string& err) const {
+
+  bool fetch_message(const std::string& uid, message& msg, std::string& err,
+                     std::size_t* raw_size_out = nullptr) const {
     std::string response;
+
+
     std::string url = base_url() + "/;UID=" + uid;
     if (!perform_request(url, "", response, err)) return false;
 
+    if (raw_size_out) *raw_size_out = response.size();
+
+
+    if (is_incomplete_literal(response)) {
+      err = "incomplete_literal: {N} marker present but body truncated (response_size="
+            + std::to_string(response.size()) + ")";
+      return false;
+    }
+
+
+    message_parse_diagnostics diag;
+    std::string raw = imap_extract_raw(response, diag);
+
     std::vector<std::string> headers;
     std::string body;
-    split_headers_body(response, headers, body);
+    split_headers_body(raw, headers, body);
+    diag.headers_count = headers.size();
+    diag.body_size     = body.size();
 
-    msg.mailbox_id = cfg.mailbox_id;
-    msg.provider = cfg.provider;
-    msg.uid = uid;
-    msg.message_id = get_header(headers, "Message-ID");
-    msg.from = get_header(headers, "From");
-    msg.to = get_header(headers, "To");
-    msg.subject = decode_mime_header(get_header(headers, "Subject"));
-    msg.date_iso = get_header(headers, "Date");
-    msg.body = body;
-    msg.body_text = extract_part_by_content_type(response, "text/plain");
-    msg.body_html = extract_part_by_content_type(response, "text/html");
-    if (msg.body_text.empty()) {
+    msg.mailbox_id  = cfg.mailbox_id;
+    msg.provider    = cfg.provider;
+    msg.uid         = uid;
+    msg.message_id  = get_header(headers, "Message-ID");
+    msg.from        = get_header(headers, "From");
+    msg.to          = get_header(headers, "To");
+    msg.subject     = decode_mime_header(get_header(headers, "Subject"));
+    msg.date_iso    = get_header(headers, "Date");
+    msg.body        = body;
+    msg.body_text   = extract_part_by_content_type(raw, "text/plain");
+    msg.body_html   = extract_part_by_content_type(raw, "text/html");
+    if (msg.body_text.empty())
       msg.body_text = msg.body_html.empty() ? body : strip_html_tags(msg.body_html);
-    }
-    msg.snippet = snippet_from_body(msg.body_text.empty() ? body : msg.body_text);
-    msg.links = extract_links(msg.body_text, msg.body_html);
+    msg.snippet     = snippet_from_body(msg.body_text.empty() ? body : msg.body_text);
+    msg.links       = extract_links(msg.body_text, msg.body_html);
     if (msg.message_id.empty()) msg.message_id = uid;
 
-    if (cfg.mark_seen) {
-      std::string ignore;
-      std::string base = base_url();
-      perform_request(base, "UID STORE " + uid + " +FLAGS (\\Seen)", ignore, err);
+    msg.attachments = extract_attachment_metadata(raw);
+    for (std::size_t i = 0; i < msg.attachments.size(); ++i)
+      msg.attachments[i].part_id = std::to_string(i + 2);
+
+    msg.parse_strategy = diag.strategy;
+
+
+    if (msg.subject.empty() && msg.from.empty() && msg.body_text.empty()) {
+      msg.parse_suspect = true;
+      std::cout << "[mail] parse_suspect uid=" << uid
+                << " strategy=" << diag.strategy
+                << " response_size=" << diag.response_size
+                << " extracted=" << diag.extracted_size
+                << " headers=" << diag.headers_count
+                << " body=" << diag.body_size
+                << "\n[mail] response_prefix="
+                << diag.response_prefix.substr(
+                       0, std::min<std::size_t>(200, diag.response_prefix.size()))
+                << std::endl;
     }
+
     return true;
+  }
+
+  std::string fetch_uid_validity() override {
+    std::string response;
+    std::string err;
+    std::string url = base_url();
+    if (!perform_request(url, "STATUS " + cfg.folder + " (UIDVALIDITY)", response, err))
+      return "";
+    return parse_uid_validity(response);
+  }
+
+  void mark_message_seen(const std::string& uid) override {
+    std::string ignore_response;
+    std::string ignore_err;
+    perform_request(base_url(), "UID STORE " + uid + " +FLAGS (\\Seen)",
+                    ignore_response, ignore_err);
   }
 };
 
@@ -478,9 +325,39 @@ imap_test_result test_imap_mailbox(const imap_config& cfg) {
     result.error = err.empty() ? "imap connection failed" : err;
     return result;
   }
-  result.reachable = true;
-  result.auth_ok = true;
-  result.folder_ok = true;
-  for (const auto& uid : uids) result.max_uid = std::max(result.max_uid, parse_uint64_or_zero(uid));
+  result.reachable  = true;
+  result.auth_ok    = true;
+  result.folder_ok  = true;
+  for (const auto& uid : uids)
+    result.max_uid = std::max(result.max_uid, parse_uint64_or_zero(uid));
+
+  result.fetch_mode = "uid_url";
+
+
+  if (result.max_uid > 0) {
+    message msg;
+    std::string fetch_err;
+    std::size_t raw_size = 0;
+    if (!client.fetch_message(std::to_string(result.max_uid), msg, fetch_err, &raw_size)) {
+      result.response_size      = static_cast<int>(raw_size);
+      result.incomplete_literal = fetch_err.find("incomplete_literal") != std::string::npos;
+      result.error = "UID SEARCH OK but FETCH uid=" + std::to_string(result.max_uid) +
+                     " failed: " + (fetch_err.empty() ? "unknown" : fetch_err);
+    } else {
+      result.response_size          = static_cast<int>(raw_size);
+      result.incomplete_literal     = false;
+      result.latest_fetch_ok        = true;
+      result.latest_subject_present = !msg.subject.empty();
+      result.latest_from_present    = !msg.from.empty();
+      result.latest_body_present    = !msg.body_text.empty();
+      result.latest_body_length     = static_cast<int>(msg.body_text.size());
+      result.links_count            = static_cast<int>(msg.links.size());
+      result.parse_suspect          = msg.parse_suspect;
+      if (msg.parse_suspect && result.error.empty()) {
+        result.error = "FETCH succeeded but message has empty subject/from/body — "
+                       "IMAP parse suspect (strategy=" + msg.parse_strategy + ")";
+      }
+    }
+  }
   return result;
 }

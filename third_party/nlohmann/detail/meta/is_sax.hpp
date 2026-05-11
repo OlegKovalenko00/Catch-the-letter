@@ -1,16 +1,11 @@
-//     __ _____ _____ _____
-//  __|  |   __|     |   | |  JSON for Modern C++
-// |  |  |__   |  |  | | | |  version 3.11.3
-// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
-//
-// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
-// SPDX-License-Identifier: MIT
+
+
 
 #pragma once
 
-#include <cstdint> // size_t
-#include <utility> // declval
-#include <string> // string
+#include <cstdint>
+#include <utility>
+#include <string>
 
 #include <nlohmann/detail/abi_macros.hpp>
 #include <nlohmann/detail/meta/detected.hpp>
@@ -155,5 +150,5 @@ struct is_sax_static_asserts
         "std::string&, const exception&)");
 };
 
-}  // namespace detail
+}
 NLOHMANN_JSON_NAMESPACE_END

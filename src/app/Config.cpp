@@ -390,6 +390,47 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
   out.auth.two_factor_via_web =
       get_bool(auth, "two_factor_via_web", out.auth.two_factor_via_web);
 
+  const json mail_proc = root.value("mail_processing", json::object());
+  out.mail_processing.classify_unmatched_with_llm =
+      get_bool(mail_proc, "classify_unmatched_with_llm", out.mail_processing.classify_unmatched_with_llm);
+  out.mail_processing.notify_important_without_rules =
+      get_bool(mail_proc, "notify_important_without_rules", out.mail_processing.notify_important_without_rules);
+  out.mail_processing.store_all_fetched =
+      get_bool(mail_proc, "store_all_fetched", out.mail_processing.store_all_fetched);
+  out.mail_processing.store_body_for_important =
+      get_bool(mail_proc, "store_body_for_important", out.mail_processing.store_body_for_important);
+  out.mail_processing.max_body_chars_to_store =
+      get_int(mail_proc, "max_body_chars_to_store", out.mail_processing.max_body_chars_to_store);
+  out.mail_processing.max_body_chars_to_llm =
+      get_int(mail_proc, "max_body_chars_to_llm", out.mail_processing.max_body_chars_to_llm);
+  out.mail_processing.notify_min_importance =
+      get_string(mail_proc, "notify_min_importance", out.mail_processing.notify_min_importance);
+  if (mail_proc.contains("llm_confidence_threshold") && mail_proc["llm_confidence_threshold"].is_number()) {
+    out.mail_processing.llm_confidence_threshold = mail_proc["llm_confidence_threshold"].get<double>();
+  }
+  out.mail_processing.fallback_keyword_importance =
+      get_bool(mail_proc, "fallback_keyword_importance", out.mail_processing.fallback_keyword_importance);
+  out.mail_processing.mark_seen_after_success =
+      get_bool(mail_proc, "mark_seen_after_success", out.mail_processing.mark_seen_after_success);
+
+  const json attach_cfg = root.value("attachments", json::object());
+  out.attachments.enabled = get_bool(attach_cfg, "enabled", out.attachments.enabled);
+  out.attachments.fetch_on_demand = get_bool(attach_cfg, "fetch_on_demand", out.attachments.fetch_on_demand);
+  out.attachments.telegram_send_enabled =
+      get_bool(attach_cfg, "telegram_send_enabled", out.attachments.telegram_send_enabled);
+  out.attachments.max_telegram_size_mb =
+      get_int(attach_cfg, "max_telegram_size_mb", out.attachments.max_telegram_size_mb);
+  out.attachments.max_download_size_mb =
+      get_int(attach_cfg, "max_download_size_mb", out.attachments.max_download_size_mb);
+  out.attachments.retention_hours =
+      get_int(attach_cfg, "retention_hours", out.attachments.retention_hours);
+  if (attach_cfg.contains("dangerous_extensions") && attach_cfg["dangerous_extensions"].is_array()) {
+    out.attachments.dangerous_extensions = json_to_string_vector(attach_cfg["dangerous_extensions"]);
+  }
+  if (attach_cfg.contains("warn_extensions") && attach_cfg["warn_extensions"].is_array()) {
+    out.attachments.warn_extensions = json_to_string_vector(attach_cfg["warn_extensions"]);
+  }
+
   out.profile_file = get_string(root, "profile_file", out.profile_file);
   out.rules_file = get_string(root, "rules_file", out.rules_file);
   out.max_retries = get_int(root, "max_retries", out.max_retries);
@@ -410,6 +451,10 @@ bool load_app_config(const std::string& path, app_config& out, std::string& err)
     mailbox.poll_interval_sec = out.imap.poll_interval_sec;
   }
   if (!out.mailboxes.empty()) out.imap = out.mailboxes.front();
+
+  const json dbg = root.value("debug", json::object());
+  out.debug.imap_parse_diagnostics =
+      get_bool(dbg, "imap_parse_diagnostics", out.debug.imap_parse_diagnostics);
 
   return true;
 }

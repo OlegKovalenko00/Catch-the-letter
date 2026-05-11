@@ -1,6 +1,6 @@
-# Windows start script for Catch-the-letter with native Ollama
-# Ollama must be installed and running on Windows
-# Usage: .\scripts\windows\start-llm-native.ps1
+
+
+
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
@@ -9,7 +9,7 @@ Set-Location $ProjectRoot
 Write-Host "=== Starting Catch-the-letter with native Windows Ollama ===" -ForegroundColor Green
 Write-Host ""
 
-# Check if Ollama is reachable
+
 $OllamaUrl = "http://127.0.0.1:11434/api/tags"
 Write-Host "Checking native Ollama at $OllamaUrl..." -ForegroundColor Cyan
 
@@ -32,7 +32,7 @@ catch {
 Write-Host ""
 Write-Host "Ensuring .env has correct LLM_ENDPOINT..." -ForegroundColor Cyan
 
-# Check if .env exists
+
 if (-Not (Test-Path ".env")) {
     Write-Host "[ERROR] .env not found. Run .\scripts\windows\setup.ps1 first" -ForegroundColor Red
     exit 1
@@ -41,7 +41,7 @@ if (-Not (Test-Path ".env")) {
 Write-Host "Starting Docker compose with standalone config..." -ForegroundColor Cyan
 Write-Host ""
 
-# Use standalone Windows config for proper port binding
+
 docker compose -f docker-compose.windows-standalone.yml up --build
 
 Write-Host ""

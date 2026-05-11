@@ -1,4 +1,5 @@
 #include "FormUnderstandingEngine.h"
+#include "ProfileFactGraph.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8,9 +9,8 @@
 #include <utility>
 
 static bool is_blank_text(const std::string& text) {
-  // Returns true if text contains only invisible Unicode or whitespace.
-  // Yandex Forms uses U+3164 Hangul Filler as placeholder on answer_* inputs.
-  // Decodes UTF-8 codepoints and allows only known-invisible ones to pass.
+
+
   if (text.empty()) return true;
   size_t i = 0;
   while (i < text.size()) {
@@ -30,15 +30,15 @@ static bool is_blank_text(const std::string& text) {
            | (static_cast<unsigned char>(text[i+3]) & 0x3Fu); len = 4;
     }
     i += static_cast<size_t>(len);
-    if (cp <= 0x20) continue;                              // ASCII whitespace / control
-    if (cp == 0x3164) continue;                            // Hangul Filler (Yandex Forms placeholder)
-    if (cp == 0x00A0) continue;                            // NBSP
-    if (cp >= 0x200B && cp <= 0x200F) continue;            // ZWSP, ZWNJ, ZWJ, LRM, RLM
-    if (cp == 0xFEFF) continue;                            // BOM / ZWNBSP
-    if (cp == 0x2060) continue;                            // Word Joiner
-    if (cp == 0x180E) continue;                            // Mongolian Vowel Separator
-    if (cp == 0x034F) continue;                            // Combining Grapheme Joiner
-    return false;  // visible codepoint found
+    if (cp <= 0x20) continue;
+    if (cp == 0x3164) continue;
+    if (cp == 0x00A0) continue;
+    if (cp >= 0x200B && cp <= 0x200F) continue;
+    if (cp == 0xFEFF) continue;
+    if (cp == 0x2060) continue;
+    if (cp == 0x180E) continue;
+    if (cp == 0x034F) continue;
+    return false;
   }
   return true;
 }
@@ -47,7 +47,7 @@ std::string field_label(const form_field& field) {
   if (!field.label.empty() && !is_blank_text(field.label)) return field.label;
   if (!field.question_block_text.empty() && !is_blank_text(field.question_block_text))
     return field.question_block_text;
-  // Yandex Forms: strip "answer_short_text_" prefix to show readable ID for UI display
+
   if (!field.api_question_id.empty()) {
     const auto& id = field.api_question_id;
     const auto last_under = id.rfind('_');
@@ -93,11 +93,11 @@ bool contains_any(const std::string& haystack, const std::vector<std::string>& n
 }
 
 std::string profile_value(const user_profile& profile, const std::string& key) {
-  // Direct lookup
+
   auto it = profile.values.find(key);
   if (it != profile.values.end()) return it->second;
-  // Cross-lookup: "custom.sex" → "sex" and "sex" → "custom.sex"
-  // Needed during migration from old nested {custom:{sex:…}} profile format.
+
+
   if (key.rfind("custom.", 0) == 0) {
     auto it2 = profile.values.find(key.substr(7));
     if (it2 != profile.values.end()) return it2->second;
@@ -197,7 +197,7 @@ bool checkbox_group_values_valid(const form_field& field) {
   return true;
 }
 
-}  // namespace
+}
 
 static std::string api_answer_type_label_hint(const std::string& api_answer_type) {
   if (api_answer_type == "answer_short_text") return "short text";
@@ -211,7 +211,7 @@ static std::string api_answer_type_label_hint(const std::string& api_answer_type
 
 std::string normalized_field_text(const form_field& field) {
   std::string extra;
-  // If visible text fields are blank, supplement with api_answer_type hint so rules can fire.
+
   if (!field.api_answer_type.empty() &&
       is_blank_text(field.label) && is_blank_text(field.question_block_text)) {
     extra = " " + api_answer_type_label_hint(field.api_answer_type);
@@ -254,6 +254,9 @@ void finalize_form_understanding(std::vector<form_field>& fields,
                                  const user_profile& profile,
                                  const std::map<std::string, form_field>& previous_by_id,
                                  const form_understanding_options& options) {
+  user_profile expanded = profile;
+  expand_profile_facts(expanded);
+
   for (auto& field : fields) {
     const auto previous = previous_by_id.find(field.id);
     if (previous != previous_by_id.end() && previous->second.user_modified && options.preserve_user_edits && !options.force) {
@@ -308,37 +311,59 @@ void finalize_form_understanding(std::vector<form_field>& fields,
         field.can_auto_fill = false;
         field.risk = "medium";
       } else if (is_email && field.mapped_profile_key.empty()) {
-        field.semantic_key = choose_email_profile_key(field, profile) == "hse_email" ? "hse_email" : "personal_email";
-        field.mapped_profile_key = choose_email_profile_key(field, profile);
-        field.suggested_value = profile_value(profile, field.mapped_profile_key);
+        field.semantic_key = choose_email_profile_key(field, expanded) == "hse_email" ? "hse_email" : "personal_email";
+        field.mapped_profile_key = choose_email_profile_key(field, expanded);
+        field.suggested_value = profile_value(expanded, field.mapped_profile_key);
         if (!field.suggested_value.empty() && field.value.empty()) field.value = field.suggested_value;
         field.source = "rule";
         field.reason = field.semantic_key == "hse_email" ? "email field has HSE/corporate context" : "generic email field matched profile email";
         field.confidence = std::max(field.confidence, 0.9);
+
       } else if (field.mapped_profile_key.empty()) {
+
+        if (!field.semantic_key_hint.empty() &&
+            field.semantic_key_hint != "unknown" &&
+            field.semantic_key_hint != "consent" &&
+            field.semantic_key_hint != "rating" &&
+            field.semantic_key_hint != "opinion" &&
+            semantic_key_allowed(field.semantic_key_hint)) {
+          const std::string hint_val = profile_value(expanded, field.semantic_key_hint);
+          if (!hint_val.empty()) {
+            field.semantic_key = field.semantic_key_hint;
+            field.mapped_profile_key = field.semantic_key_hint;
+            if (field.value.empty()) {
+              field.value = hint_val;
+              field.suggested_value = hint_val;
+            }
+            field.source = "rule";
+            field.reason = "semantic_key_hint from provider";
+            field.confidence = std::max(field.confidence, 0.88);
+          }
+        }
+        if (field.mapped_profile_key.empty()) {
         for (const auto& alias : aliases()) {
           if (!contains_any(text, alias.aliases)) continue;
           field.semantic_key = alias.semantic_key;
           field.mapped_profile_key = alias.profile_key;
-          field.suggested_value = profile_value(profile, alias.profile_key);
+          field.suggested_value = profile_value(expanded, alias.profile_key);
           if (!field.suggested_value.empty() && field.value.empty()) field.value = field.suggested_value;
           field.source = "rule";
           field.reason = "matched deterministic semantic alias";
           field.confidence = std::max(field.confidence, alias.confidence);
           break;
         }
-        // Direct profile key pass: for custom keys not covered by aliases, try matching
-        // the field label text against the normalized key name (underscores → spaces).
+
+
         if (field.mapped_profile_key.empty()) {
           static const std::set<std::string> alias_profile_keys = [] {
             std::set<std::string> s;
             for (const auto& a : aliases()) s.insert(a.profile_key);
             return s;
           }();
-          for (const auto& [pkey, pval] : profile.values) {
+          for (const auto& [pkey, pval] : expanded.values) {
             if (pval.empty()) continue;
             const std::string bare = (pkey.rfind("custom.", 0) == 0) ? pkey.substr(7) : pkey;
-            if (alias_profile_keys.count(bare)) continue;  // already covered by aliases
+            if (alias_profile_keys.count(bare)) continue;
             std::string normalized = bare;
             std::replace(normalized.begin(), normalized.end(), '_', ' ');
             if (normalized.empty() || !contains_any(text, {normalized, bare})) continue;
@@ -354,8 +379,62 @@ void finalize_form_understanding(std::vector<form_field>& fields,
         }
       }
     }
+    }
 
     if (field.suggested_value.empty() && !field.value.empty()) field.suggested_value = field.value;
+
+
+    if (field.semantic_key == "sex" && !field.value.empty() &&
+        field.type != "radio_group" && field.type != "select") {
+      const std::string canonical = profile_value(expanded, "sex_canonical");
+      if (canonical == "male" || canonical == "female" ||
+          field.value == "male" || field.value == "female") {
+        const std::string sex_ru = profile_value(expanded, "sex_ru");
+        if (!sex_ru.empty()) {
+          field.value = sex_ru;
+          field.suggested_value = sex_ru;
+        }
+      }
+    }
+
+
+    if (field.semantic_key == "sex" && !field.value.empty() &&
+        (field.type == "radio_group" || field.type == "select") && !option_value_valid(field, field.value)) {
+      static const char* sex_variants[] = {"sex_ru", "sex_short_ru", "sex_en", "sex_canonical", nullptr};
+      for (const char** v = sex_variants; *v != nullptr; ++v) {
+        const std::string variant = profile_value(expanded, *v);
+        if (!variant.empty() && option_value_valid(field, variant)) {
+          field.value = variant;
+          field.suggested_value = variant;
+          field.validation_error.clear();
+          break;
+        }
+      }
+
+      if (!option_value_valid(field, field.value)) {
+        const std::string canonical = profile_value(expanded, "sex_canonical");
+        if (!canonical.empty()) {
+          static const std::vector<std::string> male_syns   = {"мужской", "мужчина", "муж.", "м", "male", "man"};
+          static const std::vector<std::string> female_syns = {"женский", "женщина", "жен.", "ж", "female", "woman"};
+          const auto& syns = (canonical == "male") ? male_syns : female_syns;
+          for (const auto& opt : field.options) {
+            const std::string lo = lower_copy(opt.label);
+            const std::string lv = lower_copy(opt.value);
+            bool matched = false;
+            for (const auto& syn : syns) {
+              if (lo == syn || lv == syn) { matched = true; break; }
+            }
+            if (matched) {
+              field.value = opt.label.empty() ? opt.value : opt.label;
+              field.suggested_value = field.value;
+              field.validation_error.clear();
+              break;
+            }
+          }
+        }
+      }
+    }
+
     if ((field.type == "radio_group" || field.type == "select") && !field.value.empty()) {
       if (!option_value_valid(field, field.value)) {
         field.validation_error = "value does not match available options";
@@ -371,6 +450,14 @@ void finalize_form_understanding(std::vector<form_field>& fields,
       field.requires_user_input = true;
       field.can_auto_fill = false;
       field.risk = "high";
+    }
+
+
+    if (has_value(field) && field.validation_error.empty() &&
+        field.semantic_key != "consent" && field.semantic_key != "rating" &&
+        field.semantic_key != "opinion" && field.confidence >= 0.6) {
+      field.requires_user_input = false;
+      field.can_auto_fill = true;
     }
 
     if (field.confidence < 0.75 && !has_value(field)) field.requires_user_input = field.required;

@@ -1,6 +1,6 @@
-# Windows test script for Catch-the-letter
-# Runs smoke tests against running app
-# Usage: .\scripts\windows\test.ps1
+
+
+
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
@@ -9,12 +9,12 @@ Set-Location $ProjectRoot
 Write-Host "=== Catch-the-letter Windows Tests ===" -ForegroundColor Green
 Write-Host ""
 
-# On Windows Docker Desktop, ports are accessible via localhost (not 127.0.0.1 required)
+
 $BaseUrl = "http://localhost:8080"
 $BrowserWorkerUrl = "http://localhost:8090"
 $Errors = 0
 
-# Test function
+
 function Test-Endpoint {
     param(
         [string]$Name,
@@ -22,7 +22,7 @@ function Test-Endpoint {
         [string]$Method = "Get",
         [object]$Body = $null
     )
-    
+
     try {
         Write-Host "Testing: $Name" -ForegroundColor Cyan
         $params = @{
@@ -30,16 +30,16 @@ function Test-Endpoint {
             TimeoutSec = 30
             ErrorAction = "Stop"
         }
-        
+
         if ($Method -eq "Post") {
             $params["Method"] = "Post"
         }
-        
+
         if ($Body) {
             $params["ContentType"] = "application/json"
             $params["Body"] = $Body | ConvertTo-Json
         }
-        
+
         $response = Invoke-RestMethod @params
         Write-Host "  [OK] Status: $($response.status ?? 'ok')" -ForegroundColor Green
         return $true
@@ -51,7 +51,7 @@ function Test-Endpoint {
     }
 }
 
-# Run tests
+
 Write-Host "API Endpoints:" -ForegroundColor Yellow
 Test-Endpoint "GET /api/status" "$BaseUrl/api/status" | Out-Null
 Test-Endpoint "GET /health (browser-worker)" "$BrowserWorkerUrl/health" | Out-Null

@@ -1,5 +1,5 @@
-# Windows start script for Catch-the-letter (without Docker Ollama)
-# Run: .\scripts\windows\start.ps1
+
+
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
@@ -13,7 +13,7 @@ Write-Host "  - Native Ollama: LLM_ENDPOINT=http://host.docker.internal:11434/ap
 Write-Host "  - Docker Ollama: run .\scripts\windows\start-llm-docker.ps1"
 Write-Host ""
 
-# Use standalone Windows config for proper port binding
+
 docker compose -f docker-compose.windows-standalone.yml up --build
 
 Write-Host ""

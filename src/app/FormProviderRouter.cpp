@@ -16,14 +16,14 @@ bool contains(const std::string& text, const std::string& needle) {
   return text.find(needle) != std::string::npos;
 }
 
-}  // namespace
+}
 
 form_provider_router::form_provider_router(app_config cfg) : cfg(std::move(cfg)) {}
 
 form_provider_type form_provider_router::detect_provider(const std::string& url) const {
   const std::string lower = lower_ascii(url);
   if (contains(lower, "forms.yandex.ru")) {
-    // Exclude admin/results pages — these are confirmation URLs, not fillable forms.
+
     if (contains(lower, "/admin/") || contains(lower, "/answers/") ||
         contains(lower, "/results/") || contains(lower, "/success")) {
       return form_provider_type::generic_browser;
@@ -35,7 +35,7 @@ form_provider_type form_provider_router::detect_provider(const std::string& url)
       contains(lower, "google.com/forms") ||
       contains(lower, "/forms/d/e/") ||
       contains(lower, "/forms/d/")) {
-    // Exclude Google Forms analytics/response viewer pages.
+
     if (contains(lower, "/viewanalytics") || contains(lower, "/closedform")) {
       return form_provider_type::generic_browser;
     }
@@ -53,8 +53,8 @@ provider_route form_provider_router::route_for_url(const std::string& url) const
 
   if (route.provider_type == form_provider_type::yandex_forms) {
     route.submit_strategy = form_submit_strategy::yandex_forms_api;
-    // forms.yandex.ru/u/<id> are public user-published forms — allow browser fallback even
-    // without API credentials, since they don't require organisation access.
+
+
     bool is_public_user_form = lower_ascii(url).find("/u/") != std::string::npos;
     route.allow_browser_fallback =
         is_public_user_form ||

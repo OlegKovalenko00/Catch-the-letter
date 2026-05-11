@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Catch the Letter</title>
+  <meta name="color-scheme" content="light">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
@@ -11,7 +14,7 @@
   <header class="topbar">
     <div>
       <div class="eyebrow">Local assistant</div>
-      <h1>Catch the Letter</h1>
+      <h1>Catch <span>the Letter</span></h1>
     </div>
     <div class="topbar__actions">
       <button class="button button--ghost" id="refresh-button" type="button">Обновить</button>
@@ -198,6 +201,7 @@
           </div>
           <div class="button-row" style="margin-top:18px">
             <button class="button button--primary button--fill" id="save-profile-button" type="button">Сохранить профиль</button>
+            <button class="button" id="expand-profile-button" type="button">Предложить параметры</button>
           </div>
           <div class="result-panel" id="profile-result"></div>
           <details class="advanced">
@@ -262,6 +266,17 @@
         <button class="button button--primary" id="confirm-ok" value="ok">Подтвердить</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog class="modal modal--wide" id="expansion-modal">
+    <h3>Предложения по расширению профиля</h3>
+    <p style="color:var(--muted);margin-bottom:12px">Выберите поля для добавления. Текущие значения сохранятся в лог событий как резервная копия.</p>
+    <div id="expansion-info" style="margin-bottom:12px"></div>
+    <div id="expansion-table-wrap" style="overflow-x:auto;margin-bottom:16px"></div>
+    <div class="button-row button-row--right">
+      <button class="button button--ghost" id="expansion-cancel-button" type="button">Отмена</button>
+      <button class="button button--primary" id="expansion-apply-button" type="button">Применить выбранные</button>
+    </div>
   </dialog>
 </body>
 </html>

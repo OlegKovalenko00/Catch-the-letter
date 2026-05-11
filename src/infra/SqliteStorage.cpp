@@ -263,6 +263,61 @@ public:
       " updated_at TEXT NOT NULL"
       ");";
 
+    const char* ddl_email_message =
+      "CREATE TABLE IF NOT EXISTS email_message ("
+      " id TEXT PRIMARY KEY,"
+      " mailbox_id TEXT NOT NULL,"
+      " uid TEXT NOT NULL,"
+      " message_id TEXT,"
+      " from_addr TEXT,"
+      " to_addr TEXT,"
+      " subject TEXT,"
+      " date_iso TEXT,"
+      " snippet TEXT,"
+      " body_text TEXT,"
+      " links_json TEXT NOT NULL DEFAULT '[]',"
+      " attachments_json TEXT NOT NULL DEFAULT '[]',"
+      " classification_json TEXT NOT NULL DEFAULT '{}',"
+      " importance_level TEXT NOT NULL DEFAULT 'low',"
+      " importance_score REAL NOT NULL DEFAULT 0.0,"
+      " category TEXT NOT NULL DEFAULT 'other',"
+      " status TEXT NOT NULL DEFAULT 'new',"
+      " read_at TEXT,"
+      " archived_at TEXT,"
+      " muted_until TEXT,"
+      " created_at TEXT NOT NULL,"
+      " updated_at TEXT NOT NULL,"
+      " UNIQUE(mailbox_id, uid)"
+      ");";
+
+    const char* ddl_email_attachment =
+      "CREATE TABLE IF NOT EXISTS email_attachment ("
+      " id TEXT PRIMARY KEY,"
+      " email_id TEXT NOT NULL,"
+      " mailbox_id TEXT NOT NULL,"
+      " uid TEXT NOT NULL,"
+      " part_id TEXT,"
+      " filename TEXT,"
+      " mime_type TEXT,"
+      " size_bytes INTEGER NOT NULL DEFAULT 0,"
+      " content_id TEXT,"
+      " disposition TEXT,"
+      " safe_to_preview INTEGER NOT NULL DEFAULT 0,"
+      " downloaded INTEGER NOT NULL DEFAULT 0,"
+      " local_path TEXT,"
+      " sha256 TEXT,"
+      " created_at TEXT NOT NULL"
+      ");";
+
+    const char* ddl_telegram_callback_token =
+      "CREATE TABLE IF NOT EXISTS telegram_callback_token ("
+      " token TEXT PRIMARY KEY,"
+      " action TEXT NOT NULL,"
+      " payload_json TEXT NOT NULL,"
+      " expires_at TEXT NOT NULL,"
+      " created_at TEXT NOT NULL"
+      ");";
+
     char* err_msg = nullptr;
     if (sqlite3_exec(db, ddl_processed, nullptr, nullptr, &err_msg) != SQLITE_OK) {
       err = "sqlite ddl failed: " + std::string(err_msg ? err_msg : "");
@@ -280,7 +335,10 @@ public:
       ddl_active_form_session,
       ddl_telegram_dialog,
       ddl_event_log,
-      ddl_runtime_kv
+      ddl_runtime_kv,
+      ddl_email_message,
+      ddl_email_attachment,
+      ddl_telegram_callback_token
     };
     for (const char* ddl : ddl_more) {
       if (sqlite3_exec(db, ddl, nullptr, nullptr, &err_msg) != SQLITE_OK) {
@@ -706,6 +764,396 @@ public:
     sqlite3_finalize(stmt);
   }
 
+
+  std::string save_email_message(const stored_email& input) override {
+    stored_email email = input;
+    if (email.id.empty()) email.id = random_id("email_");
+    if (email.created_at.empty()) email.created_at = now_iso();
+    email.updated_at = now_iso();
+
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return email.id;
+
+    const char* sql =
+      "INSERT INTO email_message "
+      "(id,mailbox_id,uid,message_id,from_addr,to_addr,subject,date_iso,snippet,body_text,"
+      " links_json,attachments_json,classification_json,importance_level,importance_score,"
+      " category,status,read_at,archived_at,muted_until,created_at,updated_at) "
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+      "ON CONFLICT(mailbox_id,uid) DO UPDATE SET "
+      " message_id=excluded.message_id,from_addr=excluded.from_addr,to_addr=excluded.to_addr,"
+      " subject=excluded.subject,date_iso=excluded.date_iso,"
+      " snippet=CASE WHEN excluded.snippet!='' THEN excluded.snippet ELSE email_message.snippet END,"
+      " body_text=CASE WHEN excluded.body_text!='' THEN excluded.body_text ELSE email_message.body_text END,"
+      " links_json=excluded.links_json,attachments_json=excluded.attachments_json,"
+      " updated_at=excluded.updated_at;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return email.id;
+    bind_stored_email(stmt, email);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    const char* sel = "SELECT id FROM email_message WHERE mailbox_id=? AND uid=? LIMIT 1;";
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sel, -1, &stmt, nullptr) == SQLITE_OK) {
+      sqlite3_bind_text(stmt, 1, email.mailbox_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 2, email.uid.c_str(), -1, SQLITE_TRANSIENT);
+      if (sqlite3_step(stmt) == SQLITE_ROW) email.id = text_column(stmt, 0);
+      sqlite3_finalize(stmt);
+    }
+    return email.id;
+  }
+
+  void update_email_classification(const std::string& email_id,
+                                    const std::string& classification_json,
+                                    const std::string& importance_level,
+                                    double importance_score,
+                                    const std::string& category,
+                                    const std::string& status) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    const char* sql =
+      "UPDATE email_message SET "
+      "classification_json=?,importance_level=?,importance_score=?,category=?,status=?,updated_at=? "
+      "WHERE id=?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    std::string cls = classification_json.empty() ? "{}" : classification_json;
+    std::string ts = now_iso();
+    sqlite3_bind_text(stmt, 1, cls.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, importance_level.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 3, importance_score);
+    sqlite3_bind_text(stmt, 4, category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, email_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
+  std::optional<stored_email> get_email_message(const std::string& email_id) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return std::nullopt;
+    const char* sql =
+      "SELECT id,mailbox_id,uid,message_id,from_addr,to_addr,subject,date_iso,snippet,body_text,"
+      "links_json,attachments_json,classification_json,importance_level,importance_score,"
+      "category,status,read_at,archived_at,muted_until,created_at,updated_at "
+      "FROM email_message WHERE id=? LIMIT 1;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text(stmt, 1, email_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_ROW) { sqlite3_finalize(stmt); return std::nullopt; }
+    auto e = read_stored_email(stmt);
+    sqlite3_finalize(stmt);
+    return e;
+  }
+
+  std::optional<stored_email> get_email_by_mailbox_uid(const std::string& mailbox_id,
+                                                         const std::string& uid) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return std::nullopt;
+    const char* sql =
+      "SELECT id,mailbox_id,uid,message_id,from_addr,to_addr,subject,date_iso,snippet,body_text,"
+      "links_json,attachments_json,classification_json,importance_level,importance_score,"
+      "category,status,read_at,archived_at,muted_until,created_at,updated_at "
+      "FROM email_message WHERE mailbox_id=? AND uid=? LIMIT 1;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text(stmt, 1, mailbox_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, uid.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_ROW) { sqlite3_finalize(stmt); return std::nullopt; }
+    auto e = read_stored_email(stmt);
+    sqlite3_finalize(stmt);
+    return e;
+  }
+
+  std::vector<stored_email> list_emails(const email_list_filter& filter,
+                                         int limit, int offset) override {
+    std::lock_guard<std::mutex> lock(mu);
+    std::vector<stored_email> result;
+    if (!db) return result;
+
+    std::string sql =
+      "SELECT id,mailbox_id,uid,message_id,from_addr,to_addr,subject,date_iso,snippet,body_text,"
+      "links_json,attachments_json,classification_json,importance_level,importance_score,"
+      "category,status,read_at,archived_at,muted_until,created_at,updated_at "
+      "FROM email_message WHERE 1=1";
+    std::vector<std::string> binds;
+
+    if (filter.status == "important") {
+      sql += " AND importance_level IN ('critical','high') AND archived_at IS NULL";
+    } else if (filter.status == "unread") {
+      sql += " AND read_at IS NULL AND archived_at IS NULL";
+    } else if (filter.status == "archived") {
+      sql += " AND archived_at IS NOT NULL";
+    } else {
+      if (!filter.archived) sql += " AND archived_at IS NULL";
+    }
+
+    if (!filter.importance_level.empty()) {
+      sql += " AND importance_level=?";
+      binds.push_back(filter.importance_level);
+    }
+    if (!filter.mailbox_id.empty()) {
+      sql += " AND mailbox_id=?";
+      binds.push_back(filter.mailbox_id);
+    }
+    std::string now = now_iso();
+    if (!filter.muted) {
+      sql += " AND (muted_until IS NULL OR muted_until<?)";
+      binds.push_back(now);
+    }
+    sql += " ORDER BY date_iso DESC LIMIT ? OFFSET ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return result;
+    int idx = 1;
+    for (const auto& v : binds) sqlite3_bind_text(stmt, idx++, v.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, idx++, limit > 0 ? limit : 50);
+    sqlite3_bind_int(stmt, idx,   offset >= 0 ? offset : 0);
+    while (sqlite3_step(stmt) == SQLITE_ROW) result.push_back(read_stored_email(stmt));
+    sqlite3_finalize(stmt);
+    return result;
+  }
+
+  std::vector<stored_email> search_emails(const std::string& query,
+                                           int limit, int offset) override {
+    std::lock_guard<std::mutex> lock(mu);
+    std::vector<stored_email> result;
+    if (!db || query.empty()) return result;
+    const char* sql =
+      "SELECT id,mailbox_id,uid,message_id,from_addr,to_addr,subject,date_iso,snippet,body_text,"
+      "links_json,attachments_json,classification_json,importance_level,importance_score,"
+      "category,status,read_at,archived_at,muted_until,created_at,updated_at "
+      "FROM email_message "
+      "WHERE subject LIKE ? OR from_addr LIKE ? OR snippet LIKE ? OR body_text LIKE ? "
+      "ORDER BY date_iso DESC LIMIT ? OFFSET ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    std::string pat = "%" + query + "%";
+    sqlite3_bind_text(stmt, 1, pat.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, pat.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, pat.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, limit > 0 ? limit : 20);
+    sqlite3_bind_int(stmt, 6, offset >= 0 ? offset : 0);
+    while (sqlite3_step(stmt) == SQLITE_ROW) result.push_back(read_stored_email(stmt));
+    sqlite3_finalize(stmt);
+    return result;
+  }
+
+  void mark_email_read(const std::string& email_id) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    const char* sql =
+      "UPDATE email_message SET read_at=?,updated_at=? WHERE id=? AND read_at IS NULL;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    std::string ts = now_iso();
+    sqlite3_bind_text(stmt, 1, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, email_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
+  void archive_email(const std::string& email_id) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    const char* sql =
+      "UPDATE email_message SET archived_at=?,status='archived',updated_at=? "
+      "WHERE id=? AND archived_at IS NULL;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    std::string ts = now_iso();
+    sqlite3_bind_text(stmt, 1, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, email_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
+  void mute_email(const std::string& email_id, const std::string& until_iso) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    const char* sql =
+      "UPDATE email_message SET muted_until=?,updated_at=? WHERE id=?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    std::string ts = now_iso();
+    sqlite3_bind_text(stmt, 1, until_iso.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, email_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
+  int count_unread_important() override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return 0;
+    const char* sql =
+      "SELECT COUNT(*) FROM email_message "
+      "WHERE read_at IS NULL AND archived_at IS NULL "
+      "AND importance_level IN ('critical','high');";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
+    int count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return count;
+  }
+
+
+  void save_email_attachments(const std::string& email_id,
+                               const std::vector<stored_attachment>& attachments) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    const char* sql =
+      "INSERT OR IGNORE INTO email_attachment "
+      "(id,email_id,mailbox_id,uid,part_id,filename,mime_type,size_bytes,"
+      " content_id,disposition,safe_to_preview,downloaded,local_path,sha256,created_at) "
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+    for (const auto& att : attachments) {
+      sqlite3_stmt* stmt = nullptr;
+      if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) continue;
+      std::string id = att.id.empty() ? random_id("att_") : att.id;
+      std::string ts = now_iso();
+      sqlite3_bind_text(stmt, 1,  id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 2,  email_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 3,  att.mailbox_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 4,  att.uid.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 5,  att.part_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 6,  att.filename.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 7,  att.mime_type.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int64(stmt, 8, static_cast<sqlite3_int64>(att.size_bytes));
+      sqlite3_bind_text(stmt, 9,  att.content_id.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 10, att.disposition.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_int(stmt,  11, att.safe_to_preview ? 1 : 0);
+      sqlite3_bind_int(stmt,  12, att.downloaded ? 1 : 0);
+      sqlite3_bind_text(stmt, 13, att.local_path.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 14, att.sha256.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_bind_text(stmt, 15, ts.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+    }
+  }
+
+  std::vector<stored_attachment> get_email_attachments(const std::string& email_id) override {
+    std::lock_guard<std::mutex> lock(mu);
+    std::vector<stored_attachment> result;
+    if (!db) return result;
+    const char* sql =
+      "SELECT id,email_id,mailbox_id,uid,part_id,filename,mime_type,size_bytes,"
+      "content_id,disposition,safe_to_preview,downloaded,local_path,sha256,created_at "
+      "FROM email_attachment WHERE email_id=? ORDER BY rowid;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    sqlite3_bind_text(stmt, 1, email_id.c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(stmt) == SQLITE_ROW) result.push_back(read_stored_attachment(stmt));
+    sqlite3_finalize(stmt);
+    return result;
+  }
+
+  std::optional<stored_attachment> get_attachment(const std::string& attachment_id) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return std::nullopt;
+    const char* sql =
+      "SELECT id,email_id,mailbox_id,uid,part_id,filename,mime_type,size_bytes,"
+      "content_id,disposition,safe_to_preview,downloaded,local_path,sha256,created_at "
+      "FROM email_attachment WHERE id=? LIMIT 1;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text(stmt, 1, attachment_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_ROW) { sqlite3_finalize(stmt); return std::nullopt; }
+    auto a = read_stored_attachment(stmt);
+    sqlite3_finalize(stmt);
+    return a;
+  }
+
+  void update_attachment_download(const std::string& attachment_id,
+                                   const std::string& local_path,
+                                   const std::string& sha256) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    const char* sql =
+      "UPDATE email_attachment SET downloaded=1,local_path=?,sha256=? WHERE id=?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_text(stmt, 1, local_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, sha256.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, attachment_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
+
+  std::string save_telegram_callback_token(const std::string& action,
+                                            const std::string& payload_json,
+                                            int ttl_seconds) override {
+    std::string token = random_token();
+    std::string ts      = now_iso();
+    std::string expires = future_iso(ttl_seconds > 0 ? ttl_seconds : 300);
+
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return token;
+    const char* sql =
+      "INSERT INTO telegram_callback_token(token,action,payload_json,expires_at,created_at) "
+      "VALUES(?,?,?,?,?);";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return token;
+    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, action.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, payload_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, expires.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, ts.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return token;
+  }
+
+  std::optional<telegram_callback_token_record> resolve_telegram_callback_token(
+      const std::string& token) override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return std::nullopt;
+    std::string now = now_iso();
+    const char* sql =
+      "SELECT token,action,payload_json,expires_at,created_at "
+      "FROM telegram_callback_token WHERE token=? AND expires_at>? LIMIT 1;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, now.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_ROW) { sqlite3_finalize(stmt); return std::nullopt; }
+    telegram_callback_token_record rec;
+    rec.token        = text_column(stmt, 0);
+    rec.action       = text_column(stmt, 1);
+    rec.payload_json = text_column(stmt, 2);
+    rec.expires_at   = text_column(stmt, 3);
+    rec.created_at   = text_column(stmt, 4);
+    sqlite3_finalize(stmt);
+
+    const char* del = "DELETE FROM telegram_callback_token WHERE token=?;";
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(db, del, -1, &stmt, nullptr) == SQLITE_OK) {
+      sqlite3_bind_text(stmt, 1, rec.token.c_str(), -1, SQLITE_TRANSIENT);
+      sqlite3_step(stmt);
+      sqlite3_finalize(stmt);
+    }
+    return rec;
+  }
+
+  void cleanup_expired_callback_tokens() override {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!db) return;
+    std::string now = now_iso();
+    const char* sql = "DELETE FROM telegram_callback_token WHERE expires_at<?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_text(stmt, 1, now.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+  }
+
 private:
   void ensure_active_form_session_columns() {
     const char* statements[] = {
@@ -830,6 +1278,110 @@ private:
     session.created_at = text_column(stmt, 19);
     session.updated_at = text_column(stmt, 20);
     return session;
+  }
+
+  static stored_email read_stored_email(sqlite3_stmt* stmt) {
+    stored_email e;
+    e.id               = text_column(stmt, 0);
+    e.mailbox_id       = text_column(stmt, 1);
+    e.uid              = text_column(stmt, 2);
+    e.message_id       = text_column(stmt, 3);
+    e.from_addr        = text_column(stmt, 4);
+    e.to_addr          = text_column(stmt, 5);
+    e.subject          = text_column(stmt, 6);
+    e.date_iso         = text_column(stmt, 7);
+    e.snippet          = text_column(stmt, 8);
+    e.body_text        = text_column(stmt, 9);
+    e.links_json       = text_column(stmt, 10);
+    e.attachments_json = text_column(stmt, 11);
+    e.classification_json = text_column(stmt, 12);
+    e.importance_level = text_column(stmt, 13);
+    e.importance_score = sqlite3_column_double(stmt, 14);
+    e.category         = text_column(stmt, 15);
+    e.status           = text_column(stmt, 16);
+    e.read_at          = text_column(stmt, 17);
+    e.archived_at      = text_column(stmt, 18);
+    e.muted_until      = text_column(stmt, 19);
+    e.created_at       = text_column(stmt, 20);
+    e.updated_at       = text_column(stmt, 21);
+    return e;
+  }
+
+  static stored_attachment read_stored_attachment(sqlite3_stmt* stmt) {
+    stored_attachment a;
+    a.id             = text_column(stmt, 0);
+    a.email_id       = text_column(stmt, 1);
+    a.mailbox_id     = text_column(stmt, 2);
+    a.uid            = text_column(stmt, 3);
+    a.part_id        = text_column(stmt, 4);
+    a.filename       = text_column(stmt, 5);
+    a.mime_type      = text_column(stmt, 6);
+    a.size_bytes     = static_cast<std::size_t>(sqlite3_column_int64(stmt, 7));
+    a.content_id     = text_column(stmt, 8);
+    a.disposition    = text_column(stmt, 9);
+    a.safe_to_preview = sqlite3_column_int(stmt, 10) != 0;
+    a.downloaded     = sqlite3_column_int(stmt, 11) != 0;
+    a.local_path     = text_column(stmt, 12);
+    a.sha256         = text_column(stmt, 13);
+    a.created_at     = text_column(stmt, 14);
+    return a;
+  }
+
+  static void bind_stored_email(sqlite3_stmt* stmt, const stored_email& e) {
+    sqlite3_bind_text(stmt, 1,  e.id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2,  e.mailbox_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3,  e.uid.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4,  e.message_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5,  e.from_addr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6,  e.to_addr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7,  e.subject.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8,  e.date_iso.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9,  e.snippet.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, e.body_text.c_str(), -1, SQLITE_TRANSIENT);
+    std::string links  = e.links_json.empty()          ? "[]" : e.links_json;
+    std::string atts   = e.attachments_json.empty()    ? "[]" : e.attachments_json;
+    std::string cls    = e.classification_json.empty() ? "{}" : e.classification_json;
+    std::string level  = e.importance_level.empty()    ? "low"   : e.importance_level;
+    std::string cat    = e.category.empty()            ? "other" : e.category;
+    std::string stat   = e.status.empty()              ? "new"   : e.status;
+    sqlite3_bind_text(stmt, 11, links.c_str(),  -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 12, atts.c_str(),   -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, cls.c_str(),    -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, level.c_str(),  -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 15, e.importance_score);
+    sqlite3_bind_text(stmt, 16, cat.c_str(),    -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 17, stat.c_str(),   -1, SQLITE_TRANSIENT);
+    if (e.read_at.empty())     sqlite3_bind_null(stmt, 18);
+    else sqlite3_bind_text(stmt, 18, e.read_at.c_str(), -1, SQLITE_TRANSIENT);
+    if (e.archived_at.empty()) sqlite3_bind_null(stmt, 19);
+    else sqlite3_bind_text(stmt, 19, e.archived_at.c_str(), -1, SQLITE_TRANSIENT);
+    if (e.muted_until.empty()) sqlite3_bind_null(stmt, 20);
+    else sqlite3_bind_text(stmt, 20, e.muted_until.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 21, e.created_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 22, e.updated_at.c_str(), -1, SQLITE_TRANSIENT);
+  }
+
+  static std::string future_iso(int seconds) {
+    using namespace std::chrono;
+    auto tp = system_clock::now() + std::chrono::seconds(seconds);
+    auto t  = system_clock::to_time_t(tp);
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[32]{};
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf;
+  }
+
+  static std::string random_token() {
+    auto ns = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    std::ostringstream ss;
+    ss << 't' << std::hex
+       << (static_cast<unsigned long long>(ns) & 0x3FFFFFFFFFFFFull);
+    return ss.str();
   }
 
   sqlite3* db = nullptr;

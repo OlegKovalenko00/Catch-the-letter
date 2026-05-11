@@ -35,6 +35,11 @@ public:
     return {msg};
   }
 
+  std::vector<message> fetch_last_n(int n) override {
+    if (n <= 0) return {};
+    return {msg};
+  }
+
 private:
   message msg;
 };
@@ -147,6 +152,9 @@ int main(int argc, char** argv) {
   std::string create_form_session_url;
   int events_limit_override = 0;
   std::string log_level_override;
+  bool mail_reset_state = false;
+  int mail_scan_last = 0;
+  std::string mail_reset_mailbox_id;
 
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
@@ -182,10 +190,21 @@ int main(int argc, char** argv) {
       inspect_form_url = argv[++i];
     } else if (arg == "--create-form-session-url" && i + 1 < argc) {
       create_form_session_url = argv[++i];
+    } else if (arg == "--mail-reset-state") {
+      mail_reset_state = true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') mail_reset_mailbox_id = argv[++i];
+    } else if (arg == "--mail-scan-last" && i + 1 < argc) {
+      try {
+        mail_scan_last = std::stoi(argv[++i]);
+      } catch (...) {
+        std::cerr << "invalid --mail-scan-last" << std::endl;
+        return 1;
+      }
     } else if (arg == "--help") {
       std::cout << "Usage: catch_the_letter --config <path> [--once] [--demo] [--demo-auth] "
                    "[--test-config] [--test-browser] [--test-imap] [--test-llm] [--test-telegram] "
                    "[--inspect-form-url URL] [--create-form-session-url URL] "
+                   "[--mail-reset-state [MAILBOX_ID]] [--mail-scan-last N] "
                    "[--events-limit N] [--log-level LEVEL]"
                 << std::endl;
       return 0;
@@ -237,6 +256,22 @@ int main(int argc, char** argv) {
 
   if (test_config) {
     std::cout << "config ok" << std::endl;
+    return 0;
+  }
+
+  if (mail_reset_state || mail_scan_last > 0) {
+    ensure_parent_dir(cfg.storage.path);
+    std::unique_ptr<storage> store(make_sqlite_storage(cfg.storage.path, &err));
+    if (!store) {
+      std::cerr << "storage error: " << err << std::endl;
+      return 1;
+    }
+    app application(cfg, std::unique_ptr<mail_client>{}, nullptr, std::move(store), nullptr);
+    if (mail_reset_state) {
+      std::cout << application.mail_reset_state_json(mail_reset_mailbox_id) << std::endl;
+    } else {
+      std::cout << application.mail_scan_last_json(mail_scan_last) << std::endl;
+    }
     return 0;
   }
 
@@ -389,6 +424,45 @@ int main(int argc, char** argv) {
     };
     handlers.captcha_reinspect_form = [&application](const std::string& id, std::string& e) {
       return application.captcha_reinspect_form(id, e);
+    };
+    handlers.mail_debug_json = [&application]() { return application.mail_debug_json(); };
+    handlers.mail_scan_last_json = [&application](int n) { return application.mail_scan_last_json(n); };
+    handlers.mail_reset_state_json = [&application](const std::string& mailbox_id) {
+      return application.mail_reset_state_json(mailbox_id);
+    };
+    handlers.expand_profile_preview_json = [&application](const std::string& body) {
+      return application.expand_profile_preview_json(body);
+    };
+    handlers.apply_profile_expansion_json = [&application](const std::string& body, std::string& e) {
+      return application.apply_profile_expansion_json(body, e);
+    };
+    handlers.mail_list_json = [&application](const std::string& filter, int limit, int offset) {
+      return application.mail_list_json(filter, limit, offset);
+    };
+    handlers.mail_get_json = [&application](const std::string& id) {
+      return application.mail_get_json(id);
+    };
+    handlers.mail_mark_read = [&application](const std::string& id, std::string& e) {
+      return application.mail_mark_read(id, e);
+    };
+    handlers.mail_archive = [&application](const std::string& id, std::string& e) {
+      return application.mail_archive(id, e);
+    };
+    handlers.mail_mute = [&application](const std::string& id, const std::string& body, std::string& e) {
+      return application.mail_mute(id, body, e);
+    };
+    handlers.mail_attachments_json = [&application](const std::string& id) {
+      return application.mail_attachments_json(id);
+    };
+    handlers.mail_attachment_download = [&application](const std::string& id,
+                                                        std::string& content,
+                                                        std::string& content_type,
+                                                        std::string& filename,
+                                                        std::string& e) {
+      return application.mail_attachment_download(id, content, content_type, filename, e);
+    };
+    handlers.mail_search_json = [&application](const std::string& q, int limit, int offset) {
+      return application.mail_search_json(q, limit, offset);
     };
     server = make_http_server(cfg.http, handlers, err);
     if (!server->start()) {

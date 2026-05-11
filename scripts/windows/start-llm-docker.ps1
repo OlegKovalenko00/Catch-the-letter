@@ -1,5 +1,5 @@
-# Windows start script for Catch-the-letter with Docker Ollama
-# Usage: .\scripts\windows\start-llm-docker.ps1
+
+
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
@@ -9,14 +9,14 @@ Write-Host "=== Starting Catch-the-letter with Docker Ollama ===" -ForegroundCol
 Write-Host ""
 Write-Host "Setting LLM_ENDPOINT to http://ollama:11434/api/chat" -ForegroundColor Cyan
 
-# Set environment variable for this session
+
 $env:LLM_ENDPOINT = "http://ollama:11434/api/chat"
 
 Write-Host ""
 Write-Host "Starting Docker compose with llm profile and standalone config..." -ForegroundColor Cyan
 Write-Host ""
 
-# Use standalone Windows config for proper port binding
+
 docker compose -f docker-compose.windows-standalone.yml --profile llm up --build
 
 Write-Host ""
