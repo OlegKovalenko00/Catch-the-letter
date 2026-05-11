@@ -7,6 +7,7 @@
 Нужны Docker Desktop и PowerShell.
 
 ```powershell
+.\scripts\windows\start-llm-native.ps1
 .\scripts\windows\setup.ps1
 notepad .env
 notepad config\profile.json
